@@ -23,6 +23,8 @@ const STUDIO_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const STUDIO_CONNECTED_WINDOW_SECS: u64 = 5;
 const MAX_QUEUE: usize = 128;
 const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
+const TEST_CAPTURE_MARKER: &str = ".roldex/last-test-captures.json";
+const TEST_CAPTURE_PREFIX: &str = ".roldex/captures/test-";
 
 #[cfg(windows)]
 const EMBEDDED_PLUGIN: &str =
@@ -46,6 +48,12 @@ pub struct StudioCommandResult {
     pub output: Option<Value>,
     #[serde(default)]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct TestCaptureMarker {
+    #[serde(default)]
+    paths: Vec<String>,
 }
 
 struct BrokerInner {
@@ -272,7 +280,7 @@ pub fn tool_definitions() -> Vec<Value> {
         ),
         function_tool(
             "studio_scenario_test",
-            "Run a bounded end-to-end Studio playtest with simulated inputs and viewport capture checkpoints. Use for UI flows, interactions, movement, animations, Tools, spawns, and regression testing.",
+            "Run a goal-driven end-to-end Studio playtest with simulated inputs and viewport capture checkpoints. Requires a concrete review_goal and success criteria. Supports UI/gameplay input plus temporary real TextChatService chat steps.",
             test_schema(true),
         ),
         function_tool(
@@ -335,6 +343,7 @@ fn test_schema(with_scenario: bool) -> Value {
         ),
         ("args".into(), json!({})),
     ]);
+    let mut required = vec!["mode"];
     if with_scenario {
         properties.extend([
             (
@@ -351,17 +360,22 @@ fn test_schema(with_scenario: bool) -> Value {
                 json!({ "type": "integer", "minimum": 90, "maximum": 540 }),
             ),
             ("include_ui".into(), json!({ "type": "boolean" })),
-            ("review_goal".into(), json!({ "type": "string" })),
+            ("review_goal".into(), json!({ "type": "string", "minLength": 8 })),
+            (
+                "success_criteria".into(),
+                json!({ "type": "array", "minItems": 1, "maxItems": 12, "items": { "type": "string", "minLength": 3 } }),
+            ),
             (
                 "steps".into(),
                 json!({ "type": "array", "maxItems": 80, "items": { "type": "object", "additionalProperties": true } }),
             ),
         ]);
+        required.extend(["review_goal", "success_criteria"]);
     }
     json!({
         "type": "object",
         "properties": properties,
-        "required": ["mode"],
+        "required": required,
         "additionalProperties": false
     })
 }
@@ -491,11 +505,38 @@ async fn execute_capture_action(
         }
     };
     let output = match broker.submit_action(action, payload).await {
-        Ok(mut result) => match persist_captures_in_result(&mut result, fs_scope) {
-            Ok(_) => serde_json::to_string(&result)
-                .unwrap_or_else(|error| error_output(error.to_string())),
-            Err(error) => error_output(error.to_string()),
-        },
+        Ok(mut result) => {
+            let is_scenario = action == "scenario_test";
+            match persist_captures_in_result(&mut result, fs_scope, is_scenario) {
+                Ok(paths) => {
+                    if is_scenario && result.ok && !paths.is_empty() {
+                        match rotate_test_captures(fs_scope, &paths) {
+                            Ok(retired) => {
+                                if let Some(Value::Object(output)) = result.output.as_mut() {
+                                    output.insert(
+                                        "retired_previous_capture_count".into(),
+                                        json!(retired),
+                                    );
+                                    output.insert(
+                                        "capture_retention".into(),
+                                        Value::String("latest_completed_scenario".into()),
+                                    );
+                                }
+                            }
+                            Err(error) => return ToolExecution {
+                                event,
+                                output: error_output(format!(
+                                    "Studio scenario succeeded but test-capture rotation failed: {error}"
+                                )),
+                            },
+                        }
+                    }
+                    serde_json::to_string(&result)
+                        .unwrap_or_else(|error| error_output(error.to_string()))
+                }
+                Err(error) => error_output(error.to_string()),
+            }
+        }
         Err(error) => error_output(error.to_string()),
     };
     ToolExecution { event, output }
@@ -521,23 +562,30 @@ fn parse_payload(call: &ToolCall) -> std::result::Result<Value, String> {
 fn persist_captures_in_result(
     result: &mut StudioCommandResult,
     fs_scope: &WorkspaceFs,
+    scenario_test: bool,
 ) -> Result<Vec<String>> {
     let Some(Value::Object(output)) = result.output.as_mut() else {
         return Ok(Vec::new());
     };
+    let capture_group = now_millis();
+    let prefix = if scenario_test { "test" } else { "studio" };
     let mut paths = Vec::new();
-    if let Some(path) = persist_capture_object(output, fs_scope)? {
+    if let Some(path) = persist_capture_object(output, fs_scope, prefix, capture_group, paths.len())? {
         paths.push(path);
     }
     if let Some(Value::Object(capture)) = output.get_mut("capture") {
-        if let Some(path) = persist_capture_object(capture, fs_scope)? {
+        if let Some(path) =
+            persist_capture_object(capture, fs_scope, prefix, capture_group, paths.len())?
+        {
             paths.push(path);
         }
     }
     if let Some(Value::Array(captures)) = output.get_mut("captures") {
         for capture in captures.iter_mut().take(2) {
             if let Value::Object(capture) = capture {
-                if let Some(path) = persist_capture_object(capture, fs_scope)? {
+                if let Some(path) =
+                    persist_capture_object(capture, fs_scope, prefix, capture_group, paths.len())?
+                {
                     paths.push(path);
                 }
             }
@@ -549,6 +597,9 @@ fn persist_captures_in_result(
 fn persist_capture_object(
     object: &mut Map<String, Value>,
     fs_scope: &WorkspaceFs,
+    prefix: &str,
+    capture_group: u128,
+    sequence: usize,
 ) -> Result<Option<String>> {
     let encoded = object
         .remove("data_base64")
@@ -566,11 +617,60 @@ fn persist_capture_object(
         bail!("Studio capture exceeded the {MAX_CAPTURE_BYTES} byte local limit");
     }
 
-    let relative_path = format!(".roldex/captures/studio-{}.png", now_millis());
+    let relative_path = format!(
+        ".roldex/captures/{prefix}-{capture_group}-{sequence}.png"
+    );
     fs_scope.write_bytes(&relative_path, &bytes)?;
     object.insert("path".into(), Value::String(relative_path.clone()));
     object.insert("bytes".into(), json!(bytes.len()));
     Ok(Some(relative_path))
+}
+
+fn rotate_test_captures(fs_scope: &WorkspaceFs, current_paths: &[String]) -> Result<usize> {
+    if current_paths.is_empty() {
+        return Ok(0);
+    }
+    for path in current_paths {
+        if !is_safe_test_capture_path(path) {
+            bail!("refusing to record unsafe Studio test capture path: {path}");
+        }
+    }
+
+    let marker_path = fs_scope.root().join(TEST_CAPTURE_MARKER);
+    let previous = if marker_path.exists() {
+        let content = fs_scope.read_text(TEST_CAPTURE_MARKER)?;
+        serde_json::from_str::<TestCaptureMarker>(&content)
+            .map_err(|error| anyhow::anyhow!("invalid Roldex test-capture marker: {error}"))?
+    } else {
+        TestCaptureMarker::default()
+    };
+
+    let mut retired = 0usize;
+    for path in previous.paths {
+        if !is_safe_test_capture_path(&path) || current_paths.iter().any(|current| current == &path) {
+            continue;
+        }
+        let absolute = fs_scope.root().join(&path);
+        if absolute.exists() {
+            fs_scope.delete_file(&path)?;
+            retired += 1;
+        }
+    }
+
+    let marker = TestCaptureMarker {
+        paths: current_paths.to_vec(),
+    };
+    let marker_json = serde_json::to_string_pretty(&marker)
+        .map_err(|error| anyhow::anyhow!("failed to encode Roldex test-capture marker: {error}"))?;
+    fs_scope.write_text(TEST_CAPTURE_MARKER, &marker_json)?;
+    Ok(retired)
+}
+
+fn is_safe_test_capture_path(path: &str) -> bool {
+    path.starts_with(TEST_CAPTURE_PREFIX)
+        && path.ends_with(".png")
+        && !path.contains("..")
+        && !path.contains('\\')
 }
 
 fn execute_repair_plugin() -> ToolExecution {
@@ -636,7 +736,21 @@ fn now_millis() -> u128 {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
     use super::*;
+
+    fn test_dir(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "roldex-studio-{label}-{}-{unique}",
+            std::process::id()
+        ))
+    }
 
     async fn wait_for_main_command(broker: &StudioBroker) -> StudioCommand {
         for _ in 0..20 {
@@ -709,5 +823,74 @@ mod tests {
         assert!(is_runtime_action("device"));
         assert!(!is_runtime_action("batch"));
         assert!(!is_runtime_action("query"));
+    }
+
+    #[test]
+    fn scenario_capture_rotation_keeps_only_latest_completed_test() {
+        let root = test_dir("capture-rotation");
+        fs::create_dir_all(&root).expect("create root");
+        let workspace = WorkspaceFs::new(&root, crate::PermissionMode::Workspace).expect("workspace");
+
+        let mut first = StudioCommandResult {
+            id: "first".into(),
+            ok: true,
+            output: Some(json!({
+                "captures": [
+                    { "data_base64": "Zmlyc3Q=" },
+                    { "data_base64": "Zmlyc3QtMg==" }
+                ]
+            })),
+            error: None,
+        };
+        let first_paths = persist_captures_in_result(&mut first, &workspace, true).expect("persist first");
+        assert_eq!(first_paths.len(), 2);
+        assert_eq!(rotate_test_captures(&workspace, &first_paths).expect("rotate first"), 0);
+        for path in &first_paths {
+            assert!(workspace.root().join(path).exists());
+        }
+
+        std::thread::sleep(Duration::from_millis(2));
+        let mut second = StudioCommandResult {
+            id: "second".into(),
+            ok: true,
+            output: Some(json!({
+                "captures": [{ "data_base64": "c2Vjb25k" }]
+            })),
+            error: None,
+        };
+        let second_paths =
+            persist_captures_in_result(&mut second, &workspace, true).expect("persist second");
+        assert_eq!(second_paths.len(), 1);
+        assert_eq!(
+            rotate_test_captures(&workspace, &second_paths).expect("rotate second"),
+            2
+        );
+        for path in &first_paths {
+            assert!(!workspace.root().join(path).exists());
+        }
+        assert!(workspace.root().join(&second_paths[0]).exists());
+
+        let marker: TestCaptureMarker = serde_json::from_str(
+            &workspace
+                .read_text(TEST_CAPTURE_MARKER)
+                .expect("read capture marker"),
+        )
+        .expect("parse capture marker");
+        assert_eq!(marker.paths, second_paths);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn capture_rotation_rejects_non_roldex_test_paths() {
+        assert!(is_safe_test_capture_path(
+            ".roldex/captures/test-123-0.png"
+        ));
+        assert!(!is_safe_test_capture_path(
+            ".roldex/captures/studio-123-0.png"
+        ));
+        assert!(!is_safe_test_capture_path("screenshots/test-1.png"));
+        assert!(!is_safe_test_capture_path(
+            ".roldex/captures/test-../../user.png"
+        ));
     }
 }

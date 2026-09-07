@@ -1,0 +1,7 @@
+/target
+/.roldex
+roldex.toml
+.env
+*.log
+.DS_Store
+Thumbs.db

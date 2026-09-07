@@ -1,0 +1,13 @@
+[ai]
+provider = "openrouter"
+endpoint = "https://openrouter.ai/api/v1/chat/completions"
+model = "openrouter/free"
+api_key_env = "OPENROUTER_API_KEY"
+temperature = 0.2
+
+[permissions]
+mode = "workspace"
+
+[ui]
+show_progress = true
+compact = false

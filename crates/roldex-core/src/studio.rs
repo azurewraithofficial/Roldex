@@ -393,9 +393,7 @@ pub async fn execute_tool(
         "studio_device" => {
             Some(execute_remote(call, broker, "device", "Studio device simulation").await)
         }
-        "studio_input" => {
-            Some(execute_remote(call, broker, "input", "Studio virtual input").await)
-        }
+        "studio_input" => Some(execute_remote(call, broker, "input", "Studio virtual input").await),
         "studio_test" => Some(execute_remote(call, broker, "test", "Studio playtest").await),
         "studio_scenario_test" => Some(execute_scenario_test(call, broker, fs_scope).await),
         "studio_reflect" => {
@@ -523,12 +521,14 @@ async fn execute_capture_action(
                                     );
                                 }
                             }
-                            Err(error) => return ToolExecution {
-                                event,
-                                output: error_output(format!(
-                                    "Studio scenario succeeded but test-capture rotation failed: {error}"
-                                )),
-                            },
+                            Err(error) => {
+                                return ToolExecution {
+                                    event,
+                                    output: error_output(format!(
+                                        "Studio scenario succeeded but test-capture rotation failed: {error}"
+                                    )),
+                                };
+                            }
                         }
                     }
                     serde_json::to_string(&result)
@@ -544,8 +544,9 @@ async fn execute_capture_action(
 
 fn result_json(result: Result<StudioCommandResult>) -> String {
     match result {
-        Ok(result) => serde_json::to_string(&result)
-            .unwrap_or_else(|error| error_output(format!("failed to serialize Studio result: {error}"))),
+        Ok(result) => serde_json::to_string(&result).unwrap_or_else(|error| {
+            error_output(format!("failed to serialize Studio result: {error}"))
+        }),
         Err(error) => error_output(error.to_string()),
     }
 }
@@ -570,7 +571,9 @@ fn persist_captures_in_result(
     let capture_group = now_millis();
     let prefix = if scenario_test { "test" } else { "studio" };
     let mut paths = Vec::new();
-    if let Some(path) = persist_capture_object(output, fs_scope, prefix, capture_group, paths.len())? {
+    if let Some(path) =
+        persist_capture_object(output, fs_scope, prefix, capture_group, paths.len())?
+    {
         paths.push(path);
     }
     if let Some(Value::Object(capture)) = output.get_mut("capture") {
@@ -617,9 +620,7 @@ fn persist_capture_object(
         bail!("Studio capture exceeded the {MAX_CAPTURE_BYTES} byte local limit");
     }
 
-    let relative_path = format!(
-        ".roldex/captures/{prefix}-{capture_group}-{sequence}.png"
-    );
+    let relative_path = format!(".roldex/captures/{prefix}-{capture_group}-{sequence}.png");
     fs_scope.write_bytes(&relative_path, &bytes)?;
     object.insert("path".into(), Value::String(relative_path.clone()));
     object.insert("bytes".into(), json!(bytes.len()));
@@ -647,7 +648,8 @@ fn rotate_test_captures(fs_scope: &WorkspaceFs, current_paths: &[String]) -> Res
 
     let mut retired = 0usize;
     for path in previous.paths {
-        if !is_safe_test_capture_path(&path) || current_paths.iter().any(|current| current == &path) {
+        if !is_safe_test_capture_path(&path) || current_paths.iter().any(|current| current == &path)
+        {
             continue;
         }
         let absolute = fs_scope.root().join(&path);
@@ -798,9 +800,8 @@ mod tests {
         assert!(main_task.await.expect("join").expect("result").ok);
 
         let runtime_broker = broker.clone();
-        let runtime_task = tokio::spawn(async move {
-            runtime_broker.submit_action("capture", json!({})).await
-        });
+        let runtime_task =
+            tokio::spawn(async move { runtime_broker.submit_action("capture", json!({})).await });
         let runtime_command = wait_for_runtime_command(&broker).await;
         assert_eq!(runtime_command.action, "capture");
         assert!(
@@ -829,7 +830,8 @@ mod tests {
     fn scenario_capture_rotation_keeps_only_latest_completed_test() {
         let root = test_dir("capture-rotation");
         fs::create_dir_all(&root).expect("create root");
-        let workspace = WorkspaceFs::new(&root, crate::PermissionMode::Workspace).expect("workspace");
+        let workspace =
+            WorkspaceFs::new(&root, crate::PermissionMode::Workspace).expect("workspace");
 
         let mut first = StudioCommandResult {
             id: "first".into(),
@@ -842,9 +844,13 @@ mod tests {
             })),
             error: None,
         };
-        let first_paths = persist_captures_in_result(&mut first, &workspace, true).expect("persist first");
+        let first_paths =
+            persist_captures_in_result(&mut first, &workspace, true).expect("persist first");
         assert_eq!(first_paths.len(), 2);
-        assert_eq!(rotate_test_captures(&workspace, &first_paths).expect("rotate first"), 0);
+        assert_eq!(
+            rotate_test_captures(&workspace, &first_paths).expect("rotate first"),
+            0
+        );
         for path in &first_paths {
             assert!(workspace.root().join(path).exists());
         }
@@ -882,9 +888,7 @@ mod tests {
 
     #[test]
     fn capture_rotation_rejects_non_roldex_test_paths() {
-        assert!(is_safe_test_capture_path(
-            ".roldex/captures/test-123-0.png"
-        ));
+        assert!(is_safe_test_capture_path(".roldex/captures/test-123-0.png"));
         assert!(!is_safe_test_capture_path(
             ".roldex/captures/studio-123-0.png"
         ));

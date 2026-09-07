@@ -5,6 +5,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::PermissionMode;
 
+const MAX_TEXT_FILE_BYTES: u64 = 256 * 1024;
+
 #[derive(Debug, Clone)]
 pub struct WorkspaceFs {
     root: PathBuf,
@@ -20,8 +22,22 @@ impl WorkspaceFs {
         Ok(Self { root, mode })
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn read_text(&self, relative: impl AsRef<Path>) -> Result<String> {
         let path = self.resolve(relative.as_ref())?;
+        let metadata = fs::metadata(&path)
+            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        if metadata.len() > MAX_TEXT_FILE_BYTES {
+            bail!(
+                "{} is too large for one read ({} bytes; limit is {} bytes)",
+                path.display(),
+                metadata.len(),
+                MAX_TEXT_FILE_BYTES
+            );
+        }
         fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))
     }
 

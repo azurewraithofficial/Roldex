@@ -10,8 +10,9 @@
 - [x] Roblox/Rojo/Luau project detection
 - [x] workspace-scoped filesystem primitives
 - [x] basic project tree/read commands
-- [ ] structured model tool calls
-- [ ] automatic patch/create/delete workflow
+- [x] structured model tool calls
+- [x] automatic create/replace/delete workflow
+- [ ] patch-based edits for lower token usage
 - [ ] Git status/diff/restore tools
 - [ ] image-path vision input
 - [ ] Roblox docs web retrieval

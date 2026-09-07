@@ -75,10 +75,18 @@ async fn main() -> Result<()> {
         }
 
         if config.ui.show_progress {
-            println!("• Thinking in Roblox/Luau context...");
+            println!("• Working in Roblox/Luau context...");
         }
 
-        match agent.chat(input).await {
+        let show_progress = config.ui.show_progress;
+        match agent
+            .chat_with_tools(input, &fs, |event| {
+                if show_progress {
+                    println!("• {event}");
+                }
+            })
+            .await
+        {
             Ok(answer) => println!("\n{answer}\n\n✓ Finished"),
             Err(error) => eprintln!("\nAI request failed: {error:#}"),
         }
@@ -99,6 +107,6 @@ fn print_banner(project: &ProjectSummary, config: &Config) {
 
 fn print_help() {
     println!(
-        "Commands:\n  /help         Show this help\n  /status       Show project detection details\n  /tree         Show project tree\n  /read <path>  Read a UTF-8 workspace file\n  /quit         Exit Roldex\n\nAnything else is sent to the Roblox-specialized AI."
+        "Commands:\n  /help         Show this help\n  /status       Show project detection details\n  /tree         Show project tree\n  /read <path>  Read a UTF-8 workspace file\n  /quit         Exit Roldex\n\nNormal chat can now inspect, create, replace and delete workspace files using structured agent tools."
     );
 }

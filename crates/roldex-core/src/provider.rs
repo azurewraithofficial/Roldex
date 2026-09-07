@@ -3,36 +3,80 @@ use std::env;
 use anyhow::{Context, Result, bail};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::AiConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallFunction {
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: ToolCallFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self {
-            role: "system".into(),
-            content: content.into(),
-        }
+        Self::text("system", content)
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self {
-            role: "user".into(),
-            content: content.into(),
-        }
+        Self::text("user", content)
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
+        Self::text("assistant", content)
+    }
+
+    pub fn assistant_turn(content: Option<String>, tool_calls: Vec<ToolCall>) -> Self {
         Self {
             role: "assistant".into(),
-            content: content.into(),
+            content,
+            tool_calls: Some(tool_calls),
+            tool_call_id: None,
         }
     }
+
+    pub fn tool(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: "tool".into(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+        }
+    }
+
+    fn text(role: &str, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AssistantTurn {
+    pub content: Option<String>,
+    pub tool_calls: Vec<ToolCall>,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,6 +84,12 @@ struct ChatRequest<'a> {
     model: &'a str,
     messages: &'a [ChatMessage],
     temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<&'a [Value]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,6 +105,8 @@ struct Choice {
 #[derive(Debug, Deserialize)]
 struct ResponseMessage {
     content: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<ToolCall>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,7 +123,7 @@ impl OpenAiCompatibleProvider {
         }
     }
 
-    pub async fn chat(&self, messages: &[ChatMessage]) -> Result<String> {
+    pub async fn chat(&self, messages: &[ChatMessage], tools: &[Value]) -> Result<AssistantTurn> {
         if self.config.provider != "openrouter" && self.config.provider != "openai-compatible" {
             bail!(
                 "unsupported provider '{}'; v0.1 supports openrouter/openai-compatible endpoints",
@@ -86,16 +138,27 @@ impl OpenAiCompatibleProvider {
             )
         })?;
 
-        let response = self
+        let has_tools = !tools.is_empty();
+        let request = ChatRequest {
+            model: &self.config.model,
+            messages,
+            temperature: self.config.temperature,
+            tools: has_tools.then_some(tools),
+            tool_choice: has_tools.then_some("auto"),
+            parallel_tool_calls: has_tools.then_some(false),
+        };
+
+        let mut builder = self
             .client
             .post(&self.config.endpoint)
             .bearer_auth(api_key)
-            .header("X-OpenRouter-Title", "Roldex")
-            .json(&ChatRequest {
-                model: &self.config.model,
-                messages,
-                temperature: self.config.temperature,
-            })
+            .json(&request);
+
+        if self.config.provider == "openrouter" {
+            builder = builder.header("X-OpenRouter-Title", "Roldex");
+        }
+
+        let response = builder
             .send()
             .await
             .context("failed to reach AI provider")?;
@@ -113,11 +176,25 @@ impl OpenAiCompatibleProvider {
         let parsed: ChatResponse = serde_json::from_str(&body)
             .with_context(|| format!("could not parse AI provider response: {body}"))?;
 
-        parsed
+        let message = parsed
             .choices
             .into_iter()
-            .find_map(|choice| choice.message.content)
-            .filter(|content| !content.trim().is_empty())
-            .context("AI provider returned no text response")
+            .next()
+            .context("AI provider returned no choices")?
+            .message;
+
+        if message.tool_calls.is_empty()
+            && message
+                .content
+                .as_deref()
+                .is_none_or(|content| content.trim().is_empty())
+        {
+            bail!("AI provider returned neither text nor tool calls");
+        }
+
+        Ok(AssistantTurn {
+            content: message.content,
+            tool_calls: message.tool_calls,
+        })
     }
 }

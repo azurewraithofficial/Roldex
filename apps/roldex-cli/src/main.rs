@@ -1,5 +1,6 @@
 mod bridge;
 mod intent;
+#[cfg_attr(not(windows), allow(unused_mut))]
 mod ui;
 
 use std::path::PathBuf;

@@ -110,6 +110,43 @@ async fn main() -> Result<()> {
             continue;
         }
 
+        if let Some(arguments) = input.strip_prefix("/image ") {
+            let (path, prompt) = match arguments.split_once("::") {
+                Some((path, prompt)) => (path.trim(), prompt.trim()),
+                None => (
+                    arguments.trim(),
+                    "Analyze this Roblox Studio screenshot or image. Identify the relevant UI, code, scene, error, or design details and help me fix or improve the project.",
+                ),
+            };
+
+            if path.is_empty() {
+                eprintln!("usage: /image <workspace-path> :: <optional prompt>");
+                continue;
+            }
+
+            if config.ui.show_progress {
+                println!("• Reading workspace image and sending vision context...");
+            }
+
+            let show_progress = config.ui.show_progress;
+            let result = {
+                let mut agent = agent.lock().await;
+                agent
+                    .chat_with_image(prompt, path, fs.as_ref(), |event| {
+                        if show_progress {
+                            println!("• {event}");
+                        }
+                    })
+                    .await
+            };
+
+            match result {
+                Ok(answer) => println!("\n{answer}\n\n✓ Finished"),
+                Err(error) => eprintln!("\nVision request failed: {error:#}"),
+            }
+            continue;
+        }
+
         if config.ui.show_progress {
             println!("• Working in Roblox/Luau context...");
         }
@@ -147,6 +184,6 @@ fn print_banner(project: &ProjectSummary, config: &Config) {
 
 fn print_help() {
     println!(
-        "Commands:\n  /help         Show this help\n  /status       Show project detection details\n  /tree         Show project tree\n  /read <path>  Read a UTF-8 workspace file\n  /quit         Exit Roldex\n\nNormal chat can inspect, search, analyze, patch, create and delete workspace files, inspect Git, and accept live context from the Roldex Studio plugin."
+        "Commands:\n  /help                         Show this help\n  /status                       Show project detection details\n  /tree                         Show project tree\n  /read <path>                  Read a UTF-8 workspace file\n  /image <path> :: <prompt>     Analyze a workspace PNG/JPEG/WebP/GIF\n  /quit                         Exit Roldex\n\nNormal chat can inspect, search, analyze, patch, create and delete workspace files, inspect Git, and accept live context from the Roldex Studio plugin."
     );
 }

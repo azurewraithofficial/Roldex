@@ -4,6 +4,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+const PROJECT_SCAN_MAX_DEPTH: usize = 5;
+const PROJECT_SCAN_MAX_ENTRIES: usize = 4_000;
+const UNKNOWN_ROOT_SCAN_MAX_DEPTH: usize = 1;
+const UNKNOWN_ROOT_SCAN_MAX_ENTRIES: usize = 600;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectKind {
     Rojo,
@@ -35,9 +40,6 @@ pub struct ProjectSummary {
 impl ProjectSummary {
     pub fn detect(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
-        let mut stats = ScanStats::default();
-        scan(&root, 0, &mut stats)?;
-
         let studio_markers = [
             "ServerScriptService",
             "ReplicatedStorage",
@@ -46,12 +48,24 @@ impl ProjectSummary {
             "Workspace",
         ];
         let has_studio_marker = studio_markers.iter().any(|name| root.join(name).is_dir());
+        let has_root_rojo_marker = has_rojo_marker(&root)?;
+        let looks_like_project = has_studio_marker || has_root_rojo_marker || has_source_marker(&root)?;
 
-        let kind = if stats.rojo_project_files > 0 {
+        let (max_depth, max_entries) = if looks_like_project {
+            (PROJECT_SCAN_MAX_DEPTH, PROJECT_SCAN_MAX_ENTRIES)
+        } else {
+            (UNKNOWN_ROOT_SCAN_MAX_DEPTH, UNKNOWN_ROOT_SCAN_MAX_ENTRIES)
+        };
+
+        let mut stats = ScanStats::default();
+        let mut scanned = 0usize;
+        scan(&root, 0, max_depth, max_entries, &mut scanned, &mut stats)?;
+
+        let kind = if has_root_rojo_marker || stats.rojo_project_files > 0 {
             ProjectKind::Rojo
         } else if has_studio_marker {
             ProjectKind::StudioExport
-        } else if stats.luau_files + stats.lua_files > 0 {
+        } else if looks_like_project && stats.luau_files + stats.lua_files > 0 {
             ProjectKind::Luau
         } else {
             ProjectKind::Unknown
@@ -85,25 +99,103 @@ struct ScanStats {
     rojo_project_files: usize,
 }
 
-fn scan(path: &Path, depth: usize, stats: &mut ScanStats) -> Result<()> {
-    if depth > 12 {
+fn has_rojo_marker(root: &Path) -> Result<bool> {
+    for entry in fs::read_dir(root).with_context(|| format!("failed to scan {}", root.display()))? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            let name = entry.file_name();
+            if name.to_string_lossy().ends_with(".project.json") {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn has_source_marker(root: &Path) -> Result<bool> {
+    for name in ["src", "game", "scripts", "packages"] {
+        if root.join(name).is_dir() {
+            return Ok(true);
+        }
+    }
+
+    for entry in fs::read_dir(root).with_context(|| format!("failed to scan {}", root.display()))? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        match entry.path().extension().and_then(|value| value.to_str()) {
+            Some("luau" | "lua") => return Ok(true),
+            _ => {}
+        }
+    }
+    Ok(false)
+}
+
+fn should_skip_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | "target"
+            | "node_modules"
+            | ".roldex"
+            | ".cargo"
+            | ".rustup"
+            | "AppData"
+            | "Application Data"
+            | "Local Settings"
+            | "Temp"
+            | "tmp"
+            | "$Recycle.Bin"
+            | "System Volume Information"
+    )
+}
+
+fn scan(
+    path: &Path,
+    depth: usize,
+    max_depth: usize,
+    max_entries: usize,
+    scanned: &mut usize,
+    stats: &mut ScanStats,
+) -> Result<()> {
+    if depth > max_depth || *scanned >= max_entries {
         return Ok(());
     }
 
-    for entry in fs::read_dir(path).with_context(|| format!("failed to scan {}", path.display()))? {
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if depth > 0 && error.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to scan {}", path.display()));
+        }
+    };
+
+    for entry in entries {
+        if *scanned >= max_entries {
+            break;
+        }
+
         let entry = entry?;
+        *scanned += 1;
         let child = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
 
         if entry.file_type()?.is_dir() {
-            if matches!(
-                name.as_ref(),
-                ".git" | "target" | "node_modules" | ".roldex"
-            ) {
+            if should_skip_dir(&name) {
                 continue;
             }
-            scan(&child, depth + 1, stats)?;
+            scan(
+                &child,
+                depth + 1,
+                max_depth,
+                max_entries,
+                scanned,
+                stats,
+            )?;
             continue;
         }
 
@@ -153,10 +245,7 @@ fn tree_inner(
 
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if matches!(
-            name.as_ref(),
-            ".git" | "target" | "node_modules" | ".roldex"
-        ) {
+        if should_skip_dir(&name) {
             continue;
         }
 

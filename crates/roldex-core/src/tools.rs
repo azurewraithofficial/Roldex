@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::analysis::analyze_luau;
-use crate::git::{git_diff, git_status};
+use crate::git::{git_diff, git_restore_worktree_file, git_status, git_unstage_file};
 use crate::search::search_text;
 use crate::{ToolCall, WorkspaceFs, project_tree};
 
@@ -18,6 +18,7 @@ pub enum AgentEvent {
     AnalyzingLuau,
     InspectingProject,
     InspectingGit(String),
+    MutatingGit(String),
     UsingTool(String),
 }
 
@@ -32,6 +33,7 @@ impl fmt::Display for AgentEvent {
             Self::AnalyzingLuau => write!(f, "Analyzing Luau and Roblox security patterns"),
             Self::InspectingProject => write!(f, "Inspecting project tree"),
             Self::InspectingGit(action) => write!(f, "Checking Git {action}"),
+            Self::MutatingGit(action) => write!(f, "Updating Git {action}"),
             Self::UsingTool(name) => write!(f, "Using tool {name}"),
         }
     }
@@ -82,6 +84,12 @@ struct ProjectTreeArgs {
 struct GitDiffArgs {
     path: Option<String>,
     staged: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitRestoreArgs {
+    path: String,
+    confirm_discard: bool,
 }
 
 pub fn tool_definitions() -> Vec<Value> {
@@ -222,6 +230,37 @@ pub fn tool_definitions() -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "git_unstage_file",
+                "description": "Unstage one literal workspace-relative Git path while preserving its working-tree contents. Use only when the user asks to unstage that file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "One workspace-relative file path" }
+                    },
+                    "required": ["path"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "git_restore_file",
+                "description": "Discard only unstaged working-tree changes for one literal workspace-relative tracked path by restoring it from the Git index. This is destructive to unstaged edits and must only be used when the user explicitly asks to discard or undo those changes.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "One workspace-relative tracked file path" },
+                        "confirm_discard": { "type": "boolean", "description": "Must be true only when the user explicitly requested discarding this file's unstaged changes" }
+                    },
+                    "required": ["path", "confirm_discard"],
+                    "additionalProperties": false
+                }
+            }
+        }),
     ]
 }
 
@@ -236,6 +275,8 @@ pub fn execute_tool(call: &ToolCall, fs: &WorkspaceFs) -> ToolExecution {
         "delete_file" => execute_delete(call, fs),
         "git_status" => execute_git_status(fs),
         "git_diff" => execute_git_diff(call, fs),
+        "git_unstage_file" => execute_git_unstage(call, fs),
+        "git_restore_file" => execute_git_restore(call, fs),
         _ => ToolExecution {
             event: AgentEvent::UsingTool(call.function.name.clone()),
             output: error_output(format!("unknown tool: {}", call.function.name)),
@@ -394,6 +435,50 @@ fn execute_git_diff(call: &ToolCall, fs: &WorkspaceFs) -> ToolExecution {
             }
         }
         Err(error) => invalid_arguments("git_diff", error),
+    }
+}
+
+fn execute_git_unstage(call: &ToolCall, fs: &WorkspaceFs) -> ToolExecution {
+    match serde_json::from_str::<PathArgs>(&call.function.arguments) {
+        Ok(args) => {
+            let event = AgentEvent::MutatingGit(format!("unstage {}", args.path));
+            let output = if let Err(error) = fs.ensure_writable() {
+                error_output(error.to_string())
+            } else if let Err(error) = fs.validate_relative_path(&args.path) {
+                error_output(error.to_string())
+            } else {
+                match git_unstage_file(fs.root(), &args.path) {
+                    Ok(status) => json!({ "ok": true, "path": args.path, "status": status }).to_string(),
+                    Err(error) => error_output(error.to_string()),
+                }
+            };
+            ToolExecution { event, output }
+        }
+        Err(error) => invalid_arguments("git_unstage_file", error),
+    }
+}
+
+fn execute_git_restore(call: &ToolCall, fs: &WorkspaceFs) -> ToolExecution {
+    match serde_json::from_str::<GitRestoreArgs>(&call.function.arguments) {
+        Ok(args) => {
+            let event = AgentEvent::MutatingGit(format!("restore {}", args.path));
+            let output = if !args.confirm_discard {
+                error_output(
+                    "git_restore_file requires confirm_discard=true after the user explicitly asks to discard this file's unstaged changes",
+                )
+            } else if let Err(error) = fs.ensure_writable() {
+                error_output(error.to_string())
+            } else if let Err(error) = fs.validate_relative_path(&args.path) {
+                error_output(error.to_string())
+            } else {
+                match git_restore_worktree_file(fs.root(), &args.path) {
+                    Ok(status) => json!({ "ok": true, "path": args.path, "status": status }).to_string(),
+                    Err(error) => error_output(error.to_string()),
+                }
+            };
+            ToolExecution { event, output }
+        }
+        Err(error) => invalid_arguments("git_restore_file", error),
     }
 }
 

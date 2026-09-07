@@ -19,7 +19,6 @@ jobs:
           components: rustfmt, clippy
       - name: Format
         if: runner.os == 'Linux'
-        continue-on-error: true
         run: cargo fmt --all -- --check
       - name: Studio plugin static checks (Linux)
         if: runner.os == 'Linux'

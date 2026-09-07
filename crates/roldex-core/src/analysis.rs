@@ -165,7 +165,9 @@ fn analyze_file(
                         path: display_path.clone(),
                         line: line_number,
                         message: format!("Legacy scheduler call `{legacy}` detected."),
-                        remediation: format!("Use {replacement} instead of the legacy global scheduler API."),
+                        remediation: format!(
+                            "Use {replacement} instead of the legacy global scheduler API."
+                        ),
                     },
                 );
             }
@@ -201,7 +203,9 @@ fn analyze_file(
                         path: display_path.clone(),
                         line: line_number,
                         message: format!("Deprecated Roblox physics mover `{legacy}` detected."),
-                        remediation: format!("Prefer the modern constraint-based `{replacement}` API for new work."),
+                        remediation: format!(
+                            "Prefer the modern constraint-based `{replacement}` API for new work."
+                        ),
                     },
                 );
             }
@@ -265,7 +269,7 @@ fn contains_legacy_scheduler_call(code: &str, pattern: &str) -> bool {
 
     if position > 0 {
         let prefix = &code[..position];
-        if prefix.ends_with("task.") || prefix.chars().last().is_some_and(is_identifier_char) {
+        if prefix.ends_with('.') || prefix.chars().last().is_some_and(is_identifier_char) {
             return false;
         }
     }
@@ -418,7 +422,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        std::env::temp_dir().join(format!("roldex-analysis-{label}-{}-{unique}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "roldex-analysis-{label}-{}-{unique}",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -434,8 +441,18 @@ mod tests {
 
         let report = analyze_luau(&root, 50).expect("analyze");
         assert_eq!(report.scanned_files, 1);
-        assert!(report.findings.iter().any(|finding| finding.rule_id == "RLX001"));
-        assert!(report.findings.iter().any(|finding| finding.rule_id == "RLX002"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == "RLX001")
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == "RLX002")
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -447,7 +464,29 @@ mod tests {
         fs::write(root.join("Loop.luau"), "task.wait(1)\n").expect("write script");
 
         let report = analyze_luau(&root, 50).expect("analyze");
-        assert!(!report.findings.iter().any(|finding| finding.rule_id == "RLX001"));
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == "RLX001")
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn does_not_flag_method_named_wait() {
+        let root = test_dir("method-wait");
+        fs::create_dir_all(&root).expect("create root");
+        fs::write(root.join("Module.luau"), "object.wait(1)\n").expect("write script");
+
+        let report = analyze_luau(&root, 50).expect("analyze");
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == "RLX001")
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }

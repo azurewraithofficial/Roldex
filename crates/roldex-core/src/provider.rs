@@ -14,15 +14,24 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: "system".into(), content: content.into() }
+        Self {
+            role: "system".into(),
+            content: content.into(),
+        }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: content.into() }
+        Self {
+            role: "user".into(),
+            content: content.into(),
+        }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: "assistant".into(), content: content.into() }
+        Self {
+            role: "assistant".into(),
+            content: content.into(),
+        }
     }
 }
 
@@ -56,12 +65,18 @@ pub struct OpenAiCompatibleProvider {
 
 impl OpenAiCompatibleProvider {
     pub fn new(config: AiConfig) -> Self {
-        Self { client: Client::new(), config }
+        Self {
+            client: Client::new(),
+            config,
+        }
     }
 
     pub async fn chat(&self, messages: &[ChatMessage]) -> Result<String> {
         if self.config.provider != "openrouter" && self.config.provider != "openai-compatible" {
-            bail!("unsupported provider '{}'; v0.1 supports openrouter/openai-compatible endpoints", self.config.provider);
+            bail!(
+                "unsupported provider '{}'; v0.1 supports openrouter/openai-compatible endpoints",
+                self.config.provider
+            );
         }
 
         let api_key = env::var(&self.config.api_key_env).with_context(|| {
@@ -86,7 +101,10 @@ impl OpenAiCompatibleProvider {
             .context("failed to reach AI provider")?;
 
         let status = response.status();
-        let body = response.text().await.context("failed to read AI provider response")?;
+        let body = response
+            .text()
+            .await
+            .context("failed to read AI provider response")?;
 
         if !status.is_success() {
             bail!("AI provider returned HTTP {status}: {body}");

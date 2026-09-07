@@ -25,9 +25,11 @@ impl Default for Config {
 
 impl Config {
     pub fn load(explicit_path: Option<&Path>) -> Result<Self> {
-        let path = explicit_path
-            .map(ToOwned::to_owned)
-            .or_else(|| Path::new("roldex.toml").exists().then(|| Path::new("roldex.toml").to_path_buf()));
+        let path = explicit_path.map(ToOwned::to_owned).or_else(|| {
+            Path::new("roldex.toml")
+                .exists()
+                .then(|| Path::new("roldex.toml").to_path_buf())
+        });
 
         let Some(path) = path else {
             return Ok(Self::default());

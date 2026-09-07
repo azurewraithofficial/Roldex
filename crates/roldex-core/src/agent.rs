@@ -1,9 +1,9 @@
 use anyhow::Result;
 
+use crate::AiConfig;
 use crate::project::ProjectSummary;
 use crate::prompt::ROBLOX_SYSTEM_PROMPT;
 use crate::provider::{ChatMessage, OpenAiCompatibleProvider};
-use crate::AiConfig;
 
 pub struct Agent {
     provider: OpenAiCompatibleProvider,
@@ -34,7 +34,6 @@ impl Agent {
         self.history.push(ChatMessage::user(input));
         self.history.push(ChatMessage::assistant(answer.clone()));
 
-        // Keep v0.1 sessions bounded so long chats do not grow RAM forever.
         const MAX_HISTORY_MESSAGES: usize = 24;
         if self.history.len() > MAX_HISTORY_MESSAGES {
             let remove = self.history.len() - MAX_HISTORY_MESSAGES;

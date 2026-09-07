@@ -97,7 +97,10 @@ fn scan(path: &Path, depth: usize, stats: &mut ScanStats) -> Result<()> {
         let name = name.to_string_lossy();
 
         if entry.file_type()?.is_dir() {
-            if matches!(name.as_ref(), ".git" | "target" | "node_modules" | ".roldex") {
+            if matches!(
+                name.as_ref(),
+                ".git" | "target" | "node_modules" | ".roldex"
+            ) {
                 continue;
             }
             scan(&child, depth + 1, stats)?;
@@ -150,7 +153,10 @@ fn tree_inner(
 
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if matches!(name.as_ref(), ".git" | "target" | "node_modules" | ".roldex") {
+        if matches!(
+            name.as_ref(),
+            ".git" | "target" | "node_modules" | ".roldex"
+        ) {
             continue;
         }
 
@@ -159,7 +165,11 @@ fn tree_inner(
             .strip_prefix(root)
             .unwrap_or(&entry_path)
             .to_path_buf();
-        out.push_str(&format!("{}{}\n", "  ".repeat(depth), relative.display()));
+        out.push_str(&format!(
+            "{}{}\n",
+            "  ".repeat(depth),
+            relative.display()
+        ));
         *count += 1;
 
         if entry.file_type()?.is_dir() {

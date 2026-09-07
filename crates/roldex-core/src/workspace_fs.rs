@@ -56,7 +56,10 @@ impl WorkspaceFs {
             bail!("absolute paths are not allowed in workspace tools");
         }
         if relative.components().any(|component| {
-            matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_))
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
         }) {
             bail!("path traversal outside the workspace is not allowed");
         }

@@ -31,6 +31,10 @@ impl WorkspaceFs {
         self.resolve_lexical(relative.as_ref())
     }
 
+    pub fn ensure_writable(&self) -> Result<()> {
+        self.require_write()
+    }
+
     pub fn read_text(&self, relative: impl AsRef<Path>) -> Result<String> {
         let path = self.resolve_existing(relative.as_ref())?;
         let metadata =

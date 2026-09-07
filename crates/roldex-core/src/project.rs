@@ -165,11 +165,7 @@ fn tree_inner(
             .strip_prefix(root)
             .unwrap_or(&entry_path)
             .to_path_buf();
-        out.push_str(&format!(
-            "{}{}\n",
-            "  ".repeat(depth),
-            relative.display()
-        ));
+        out.push_str(&format!("{}{}\n", "  ".repeat(depth), relative.display()));
         *count += 1;
 
         if entry.file_type()?.is_dir() {

@@ -44,15 +44,25 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Build release binary
         run: cargo build --release -p roldex-cli --target ${{ matrix.target }}
-      - name: Stage binary
+      - name: Stage binary and checksum
         shell: bash
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.asset }}"
+          python - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+
+          path = Path("dist/${{ matrix.asset }}")
+          digest = sha256(path.read_bytes()).hexdigest()
+          Path(str(path) + ".sha256").write_text(f"{digest}  {path.name}\n", encoding="utf-8")
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
-          path: dist/${{ matrix.asset }}
+          path: |
+            dist/${{ matrix.asset }}
+            dist/${{ matrix.asset }}.sha256
           if-no-files-found: error
 
   release:

@@ -27,6 +27,9 @@ const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
 #[cfg(windows)]
 const EMBEDDED_PLUGIN: &str =
     include_str!("../../../plugins/roldex-studio/RoldexStudio.plugin.lua");
+#[cfg(windows)]
+const EMBEDDED_RUNTIME_PLUGIN: &str =
+    include_str!("../../../plugins/roldex-studio/RoldexStudioRuntime.plugin.lua");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StudioCommand {
@@ -47,6 +50,7 @@ pub struct StudioCommandResult {
 
 struct BrokerInner {
     queue: Mutex<VecDeque<StudioCommand>>,
+    runtime_queue: Mutex<VecDeque<StudioCommand>>,
     pending: Mutex<HashMap<String, oneshot::Sender<StudioCommandResult>>>,
     next_id: AtomicU64,
     last_seen: AtomicU64,
@@ -68,6 +72,7 @@ impl StudioBroker {
         Self {
             inner: Arc::new(BrokerInner {
                 queue: Mutex::new(VecDeque::new()),
+                runtime_queue: Mutex::new(VecDeque::new()),
                 pending: Mutex::new(HashMap::new()),
                 next_id: AtomicU64::new(1),
                 last_seen: AtomicU64::new(0),
@@ -90,16 +95,12 @@ impl StudioBroker {
 
     pub async fn poll(&self, max_commands: usize) -> Vec<StudioCommand> {
         self.mark_seen();
-        let mut queue = self.inner.queue.lock().await;
-        let max_commands = max_commands.clamp(1, 16);
-        let mut commands = Vec::with_capacity(max_commands.min(queue.len()));
-        for _ in 0..max_commands {
-            let Some(command) = queue.pop_front() else {
-                break;
-            };
-            commands.push(command);
-        }
-        commands
+        drain_queue(&self.inner.queue, max_commands).await
+    }
+
+    pub async fn poll_runtime(&self, max_commands: usize) -> Vec<StudioCommand> {
+        self.mark_seen();
+        drain_queue(&self.inner.runtime_queue, max_commands).await
     }
 
     pub async fn complete(&self, result: StudioCommandResult) -> bool {
@@ -108,14 +109,19 @@ impl StudioBroker {
         sender.is_some_and(|sender| sender.send(result).is_ok())
     }
 
-    async fn submit(&self, action: &str, payload: Value) -> Result<StudioCommandResult> {
+    pub async fn submit_action(&self, action: &str, payload: Value) -> Result<StudioCommandResult> {
         if !self.is_connected() {
             bail!(
-                "Roldex Studio plugin is not connected. Try repair_studio_plugin, then re-check Studio connectivity. If Studio already has the plugin open, it may need a restart to reload repaired plugin code."
+                "Roldex Studio plugins are not connected. Try repair_studio_plugin, then re-check Studio connectivity. If Studio is already open, restart it so repaired plugin code reloads."
             );
         }
 
-        if self.inner.queue.lock().await.len() >= MAX_QUEUE {
+        let queue = if is_runtime_action(action) {
+            &self.inner.runtime_queue
+        } else {
+            &self.inner.queue
+        };
+        if queue.lock().await.len() >= MAX_QUEUE {
             bail!("Studio command queue is full; wait for the plugin to catch up");
         }
 
@@ -125,7 +131,7 @@ impl StudioBroker {
         );
         let (tx, rx) = oneshot::channel();
         self.inner.pending.lock().await.insert(id.clone(), tx);
-        self.inner.queue.lock().await.push_back(StudioCommand {
+        queue.lock().await.push_back(StudioCommand {
             id: id.clone(),
             action: action.to_owned(),
             payload,
@@ -140,12 +146,32 @@ impl StudioBroker {
             Err(_) => {
                 self.inner.pending.lock().await.remove(&id);
                 bail!(
-                    "Studio command timed out after {} seconds. The plugin may be busy, disconnected, playtesting, or blocked by a Studio permission/prompt.",
+                    "Studio command timed out after {} seconds. Studio may be busy, disconnected, playtesting, or waiting for a permission prompt.",
                     STUDIO_COMMAND_TIMEOUT.as_secs()
                 )
             }
         }
     }
+}
+
+async fn drain_queue(
+    queue: &Mutex<VecDeque<StudioCommand>>,
+    max_commands: usize,
+) -> Vec<StudioCommand> {
+    let mut queue = queue.lock().await;
+    let max_commands = max_commands.clamp(1, 16);
+    let mut commands = Vec::with_capacity(max_commands.min(queue.len()));
+    for _ in 0..max_commands {
+        let Some(command) = queue.pop_front() else {
+            break;
+        };
+        commands.push(command);
+    }
+    commands
+}
+
+fn is_runtime_action(action: &str) -> bool {
+    matches!(action, "capture" | "scenario_test" | "input" | "device" | "reflect")
 }
 
 pub fn tool_definitions() -> Vec<Value> {
@@ -154,7 +180,7 @@ pub fn tool_definitions() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "studio_health",
-                "description": "Check whether the Roldex Studio plugin is actively connected and polling for commands.",
+                "description": "Check whether Roldex Studio is actively connected.",
                 "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
             }
         }),
@@ -162,7 +188,7 @@ pub fn tool_definitions() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "studio_query",
-                "description": "Read live Roblox Studio state through the connected plugin. Operations: selection, inspect, children, find. For inspect/children provide path. For find provide optional root_path, name_contains, class_name, and max_results. Paths use Roblox full names such as Workspace.Map.Door or ReplicatedStorage.Remotes.",
+                "description": "Read live Roblox Studio state. Operations: selection, inspect, children, find. Use before editing and after important changes.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -183,19 +209,14 @@ pub fn tool_definitions() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "studio_batch",
-                "description": "Apply an atomic, undoable batch of Roblox Studio changes. Changes execute one action at a time in Studio so the user can watch Roldex build in real time. Prefer this tool and real Instances over generating one-off builder scripts. Supported action op values: create, set_properties, set_attributes, move, clone, delete, update_script, select, add_tag, remove_tag, pivot_to, terrain_fill_block, terrain_fill_ball, terrain_clear. A create/clone action may include ref so later actions can target '$ref'. Property values may be primitives or typed objects using $type: Vector3{x,y,z}, Vector2{x,y}, Color3{r,g,b}, UDim{scale,offset}, UDim2{x_scale,x_offset,y_scale,y_offset}, CFrame{components:[12 numbers]}, Enum{enum_type,item}, BrickColor{name}, NumberRange{min,max}, Rect{min_x,min_y,max_x,max_y}, Instance{path}, NumberSequence, ColorSequence. For scripts, create can include source or update_script can replace source through ScriptEditorService. Keep live_delay_ms around 30-80 for visible builds and lower it only for very large repetitive batches. Verify important changes afterward with studio_query and visually when appropriate.",
+                "description": "Apply an undoable batch of Studio changes one action at a time so the user can watch Roldex build. Prefer real Instances over one-off builder scripts. Ops: create, set_properties, set_attributes, move, clone, delete, update_script, select, add_tag, remove_tag, pivot_to, terrain_fill_block, terrain_fill_ball, terrain_clear.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "label": { "type": "string", "description": "Short undo-history label" },
+                        "label": { "type": "string" },
                         "live_delay_ms": { "type": "integer", "minimum": 0, "maximum": 500 },
                         "highlight_created": { "type": "boolean" },
-                        "actions": {
-                            "type": "array",
-                            "minItems": 1,
-                            "maxItems": 100,
-                            "items": { "type": "object", "additionalProperties": true }
-                        }
+                        "actions": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "type": "object", "additionalProperties": true } }
                     },
                     "required": ["actions"],
                     "additionalProperties": false
@@ -206,13 +227,14 @@ pub fn tool_definitions() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "studio_capture_view",
-                "description": "Capture the current Roblox Studio viewport as a downscaled PNG and save it under .roldex/captures for visual AI analysis. Use after map/UI/lighting/visual changes and during visual debugging. Studio may ask for screenshot permission the first time.",
+                "description": "Capture the current Studio viewport as PNG for visual AI QA. Roldex saves the bounded capture under .roldex/captures and automatically vision-reviews it.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "width": { "type": "integer", "minimum": 160, "maximum": 1280 },
-                        "height": { "type": "integer", "minimum": 90, "maximum": 720 },
-                        "include_ui": { "type": "boolean" }
+                        "width": { "type": "integer", "minimum": 160, "maximum": 960 },
+                        "height": { "type": "integer", "minimum": 90, "maximum": 540 },
+                        "include_ui": { "type": "boolean" },
+                        "review_goal": { "type": "string" }
                     },
                     "additionalProperties": false
                 }
@@ -222,15 +244,17 @@ pub fn tool_definitions() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "studio_device",
-                "description": "Inspect or control Studio device simulation for responsive UI testing. Operations: status, list, set_device, set_resolution, set_orientation, stop. Use this to validate phone/tablet/desktop layouts instead of assuming one viewport size.",
+                "description": "Inspect/control Studio device simulation. Operations: status, list, set_device, set_resolution, set_orientation, set_dpi, set_scaling, stop.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "operation": { "type": "string", "enum": ["status", "list", "set_device", "set_resolution", "set_orientation", "stop"] },
+                        "operation": { "type": "string", "enum": ["status", "list", "set_device", "set_resolution", "set_orientation", "set_dpi", "set_scaling", "stop"] },
                         "device_id": { "type": "string" },
-                        "width": { "type": "integer", "minimum": 240, "maximum": 7680 },
-                        "height": { "type": "integer", "minimum": 240, "maximum": 4320 },
-                        "orientation": { "type": "string", "enum": ["landscape", "portrait", "sensor"] }
+                        "width": { "type": "integer", "minimum": 1, "maximum": 7680 },
+                        "height": { "type": "integer", "minimum": 1, "maximum": 4320 },
+                        "orientation": { "type": "string", "enum": ["portrait", "landscape", "landscape_right"] },
+                        "dpi": { "type": "number", "minimum": 72, "maximum": 10000 },
+                        "scaling_mode": { "type": "string", "enum": ["fit", "actual", "physical"] }
                     },
                     "required": ["operation"],
                     "additionalProperties": false
@@ -240,35 +264,29 @@ pub fn tool_definitions() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
+                "name": "studio_input",
+                "description": "Simulate bounded keyboard/mouse/pointer/text input in an already-running Studio test. Intended for testing the experience's own UI and gameplay controls.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "steps": { "type": "array", "maxItems": 80, "items": { "type": "object", "additionalProperties": true } }
+                    },
+                    "required": ["steps"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
                 "name": "studio_test",
-                "description": "Run an automated Roblox Studio smoke/play/multiplayer test and collect Studio output. Modes: run, play, multiplayer. Tests are bounded by timeout_seconds; multiplayer supports 1-8 players. Optional input_steps can simulate player-facing keyboard, mouse, pointer, or text interactions when Roblox exposes VirtualInput to this plugin context. Optional capture_at_seconds takes a visual snapshot during the test. Use this for end-to-end UI, movement, interaction, animation, progression, spawn and regression checks. Treat output errors/warnings or unavailable automation capabilities as signals to inspect/repair rather than pretending the test passed.",
+                "description": "Run a bounded Studio run/play/multiplayer smoke test and collect output. Use after meaningful runtime changes.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "mode": { "type": "string", "enum": ["run", "play", "multiplayer"] },
                         "players": { "type": "integer", "minimum": 1, "maximum": 8 },
-                        "timeout_seconds": { "type": "integer", "minimum": 2, "maximum": 90 },
-                        "capture_at_seconds": { "type": "number", "minimum": 0.2, "maximum": 80 },
-                        "input_steps": {
-                            "type": "array",
-                            "maxItems": 100,
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "at_seconds": { "type": "number", "minimum": 0 },
-                                    "type": { "type": "string", "enum": ["key", "mouse_button", "mouse_move", "mouse_position", "text", "pointer"] },
-                                    "key_code": { "type": "string" },
-                                    "hold_seconds": { "type": "number", "minimum": 0, "maximum": 10 },
-                                    "x": { "type": "number" },
-                                    "y": { "type": "number" },
-                                    "button": { "type": "string" },
-                                    "text": { "type": "string" },
-                                    "pointer_action": { "type": "object", "additionalProperties": true }
-                                },
-                                "required": ["type"],
-                                "additionalProperties": false
-                            }
-                        },
+                        "timeout_seconds": { "type": "integer", "minimum": 2, "maximum": 60 },
                         "args": {}
                     },
                     "required": ["mode"],
@@ -279,27 +297,50 @@ pub fn tool_definitions() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
-                "name": "studio_undo",
-                "description": "Undo the most recent Studio change using ChangeHistoryService. Use only when the task requires undoing a Studio mutation.",
-                "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+                "name": "studio_scenario_test",
+                "description": "Run a bounded end-to-end Studio playtest with simulated inputs and up to two viewport capture checkpoints. Use for UI flows, interactions, movement, animations, tools, spawns, and regression testing. Captures are automatically vision-reviewed by Roldex.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "mode": { "type": "string", "enum": ["run", "play", "multiplayer"] },
+                        "players": { "type": "integer", "minimum": 1, "maximum": 8 },
+                        "timeout_seconds": { "type": "integer", "minimum": 2, "maximum": 60 },
+                        "start_delay_seconds": { "type": "number", "minimum": 0, "maximum": 10 },
+                        "capture_at_end": { "type": "boolean" },
+                        "capture_width": { "type": "integer", "minimum": 160, "maximum": 960 },
+                        "capture_height": { "type": "integer", "minimum": 90, "maximum": 540 },
+                        "include_ui": { "type": "boolean" },
+                        "review_goal": { "type": "string" },
+                        "steps": { "type": "array", "maxItems": 80, "items": { "type": "object", "additionalProperties": true } },
+                        "args": {}
+                    },
+                    "required": ["mode"],
+                    "additionalProperties": false
+                }
             }
         }),
         json!({
             "type": "function",
             "function": {
-                "name": "studio_redo",
-                "description": "Redo the next Studio history action using ChangeHistoryService.",
-                "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+                "name": "studio_reflect",
+                "description": "Ask Studio's ReflectionService about a Roblox class when dynamic engine API inspection helps. This complements current Creator Hub documentation.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "class_name": { "type": "string" },
+                        "include_properties": { "type": "boolean" },
+                        "include_methods": { "type": "boolean" },
+                        "include_events": { "type": "boolean" },
+                        "filter": { "type": "object", "additionalProperties": true }
+                    },
+                    "required": ["class_name"],
+                    "additionalProperties": false
+                }
             }
         }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": "repair_studio_plugin",
-                "description": "Repair/reinstall the local Roldex Studio plugin from the exact plugin source embedded in this Roldex build. Use automatically when Studio tools fail because the plugin is missing/corrupt on Windows. Studio may need to be restarted after repair so it reloads the plugin.",
-                "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
-            }
-        }),
+        json!({ "type": "function", "function": { "name": "studio_undo", "description": "Undo the most recent Studio change.", "parameters": { "type": "object", "properties": {}, "additionalProperties": false } } }),
+        json!({ "type": "function", "function": { "name": "studio_redo", "description": "Redo the next Studio history action.", "parameters": { "type": "object", "properties": {}, "additionalProperties": false } } }),
+        json!({ "type": "function", "function": { "name": "repair_studio_plugin", "description": "Repair/reinstall both local Roldex Studio plugin files on Windows. Use automatically when Studio integration is missing/corrupt.", "parameters": { "type": "object", "properties": {}, "additionalProperties": false } } }),
     ]
 }
 
@@ -314,7 +355,10 @@ pub async fn execute_tool(
         "studio_batch" => Some(execute_remote(call, broker, "batch", "Studio live build").await),
         "studio_capture_view" => Some(execute_capture(call, broker, fs_scope).await),
         "studio_device" => Some(execute_remote(call, broker, "device", "Studio device simulation").await),
-        "studio_test" => Some(execute_test(call, broker, fs_scope).await),
+        "studio_input" => Some(execute_remote(call, broker, "input", "Studio virtual input").await),
+        "studio_test" => Some(execute_remote(call, broker, "test", "Studio playtest").await),
+        "studio_scenario_test" => Some(execute_scenario_test(call, broker, fs_scope).await),
+        "studio_reflect" => Some(execute_remote(call, broker, "reflect", "Studio API reflection").await),
         "studio_undo" => Some(execute_remote(call, broker, "undo", "Studio undo").await),
         "studio_redo" => Some(execute_remote(call, broker, "redo", "Studio redo").await),
         "repair_studio_plugin" => Some(execute_repair_plugin()),
@@ -348,24 +392,16 @@ async fn execute_remote(
             output: error_output("Studio broker is not available in this Roldex session"),
         };
     };
-
     let payload = match parse_payload(call) {
         Ok(payload) => payload,
-        Err(error) => {
-            return ToolExecution {
-                event,
-                output: error_output(error),
-            };
-        }
+        Err(error) => return ToolExecution { event, output: error_output(error) },
     };
-
-    let output = match broker.submit(action, payload).await {
+    let output = match broker.submit_action(action, payload).await {
         Ok(result) => serde_json::to_string(&result).unwrap_or_else(|error| {
             error_output(format!("failed to serialize Studio result: {error}"))
         }),
         Err(error) => error_output(error.to_string()),
     };
-
     ToolExecution { event, output }
 }
 
@@ -376,26 +412,15 @@ async fn execute_capture(
 ) -> ToolExecution {
     let event = AgentEvent::UsingTool("Capturing Studio viewport".into());
     let Some(broker) = broker else {
-        return ToolExecution {
-            event,
-            output: error_output("Studio broker is not available in this Roldex session"),
-        };
+        return ToolExecution { event, output: error_output("Studio broker is not available") };
     };
     let payload = match parse_payload(call) {
         Ok(payload) => payload,
-        Err(error) => {
-            return ToolExecution {
-                event,
-                output: error_output(error),
-            };
-        }
+        Err(error) => return ToolExecution { event, output: error_output(error) },
     };
-
-    let output = match broker.submit("capture", payload).await {
-        Ok(mut result) => match persist_capture_in_result(&mut result, fs_scope) {
-            Ok(_) => serde_json::to_string(&result).unwrap_or_else(|error| {
-                error_output(format!("failed to serialize Studio capture result: {error}"))
-            }),
+    let output = match broker.submit_action("capture", payload).await {
+        Ok(mut result) => match persist_captures_in_result(&mut result, fs_scope) {
+            Ok(_) => serde_json::to_string(&result).unwrap_or_else(|error| error_output(error.to_string())),
             Err(error) => error_output(error.to_string()),
         },
         Err(error) => error_output(error.to_string()),
@@ -403,33 +428,22 @@ async fn execute_capture(
     ToolExecution { event, output }
 }
 
-async fn execute_test(
+async fn execute_scenario_test(
     call: &ToolCall,
     broker: Option<&StudioBroker>,
     fs_scope: &WorkspaceFs,
 ) -> ToolExecution {
-    let event = AgentEvent::UsingTool("Studio automated playtest".into());
+    let event = AgentEvent::UsingTool("Studio visual scenario test".into());
     let Some(broker) = broker else {
-        return ToolExecution {
-            event,
-            output: error_output("Studio broker is not available in this Roldex session"),
-        };
+        return ToolExecution { event, output: error_output("Studio broker is not available") };
     };
     let payload = match parse_payload(call) {
         Ok(payload) => payload,
-        Err(error) => {
-            return ToolExecution {
-                event,
-                output: error_output(error),
-            };
-        }
+        Err(error) => return ToolExecution { event, output: error_output(error) },
     };
-
-    let output = match broker.submit("test", payload).await {
-        Ok(mut result) => match persist_capture_in_result(&mut result, fs_scope) {
-            Ok(_) => serde_json::to_string(&result).unwrap_or_else(|error| {
-                error_output(format!("failed to serialize Studio test result: {error}"))
-            }),
+    let output = match broker.submit_action("scenario_test", payload).await {
+        Ok(mut result) => match persist_captures_in_result(&mut result, fs_scope) {
+            Ok(_) => serde_json::to_string(&result).unwrap_or_else(|error| error_output(error.to_string())),
             Err(error) => error_output(error.to_string()),
         },
         Err(error) => error_output(error.to_string()),
@@ -446,29 +460,42 @@ fn parse_payload(call: &ToolCall) -> std::result::Result<Value, String> {
     }
 }
 
-fn persist_capture_in_result(
+fn persist_captures_in_result(
     result: &mut StudioCommandResult,
     fs_scope: &WorkspaceFs,
-) -> Result<Option<String>> {
+) -> Result<Vec<String>> {
     let Some(Value::Object(output)) = result.output.as_mut() else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
-
+    let mut paths = Vec::new();
     if let Some(path) = persist_capture_object(output, fs_scope)? {
-        return Ok(Some(path));
+        paths.push(path);
     }
-
-    let Some(Value::Object(capture)) = output.get_mut("capture") else {
-        return Ok(None);
-    };
-    persist_capture_object(capture, fs_scope)
+    if let Some(Value::Object(capture)) = output.get_mut("capture") {
+        if let Some(path) = persist_capture_object(capture, fs_scope)? {
+            paths.push(path);
+        }
+    }
+    if let Some(Value::Array(captures)) = output.get_mut("captures") {
+        for capture in captures.iter_mut().take(2) {
+            if let Value::Object(capture) = capture {
+                if let Some(path) = persist_capture_object(capture, fs_scope)? {
+                    paths.push(path);
+                }
+            }
+        }
+    }
+    Ok(paths)
 }
 
 fn persist_capture_object(
     object: &mut Map<String, Value>,
     fs_scope: &WorkspaceFs,
 ) -> Result<Option<String>> {
-    let Some(Value::String(encoded)) = object.remove("data_base64") else {
+    let encoded = object
+        .remove("data_base64")
+        .or_else(|| object.remove("png_base64"));
+    let Some(Value::String(encoded)) = encoded else {
         return Ok(None);
     };
     let bytes = STANDARD
@@ -478,12 +505,8 @@ fn persist_capture_object(
         bail!("Studio capture returned an empty image");
     }
     if bytes.len() > MAX_CAPTURE_BYTES {
-        bail!(
-            "Studio capture exceeded the {} byte local limit after decoding",
-            MAX_CAPTURE_BYTES
-        );
+        bail!("Studio capture exceeded the {MAX_CAPTURE_BYTES} byte local limit");
     }
-
     let relative = format!(".roldex/captures/studio-{}.png", now_millis());
     fs_scope.write_bytes(&relative, &bytes)?;
     object.insert("path".into(), Value::String(relative.clone()));
@@ -493,11 +516,11 @@ fn persist_capture_object(
 
 fn execute_repair_plugin() -> ToolExecution {
     let event = AgentEvent::UsingTool("Studio plugin repair".into());
-    let output = match install_embedded_plugin() {
-        Ok(path) => json!({
+    let output = match install_embedded_plugins() {
+        Ok(paths) => json!({
             "ok": true,
-            "path": path,
-            "message": "Roldex Studio plugin source was repaired. If Studio is already open, restart Studio so it reloads the plugin."
+            "paths": paths,
+            "message": "Roldex Studio plugins were repaired. Restart Studio if it is already open."
         })
         .to_string(),
         Err(error) => error_output(error.to_string()),
@@ -505,7 +528,7 @@ fn execute_repair_plugin() -> ToolExecution {
     ToolExecution { event, output }
 }
 
-fn install_embedded_plugin() -> Result<String> {
+fn install_embedded_plugins() -> Result<Vec<String>> {
     #[cfg(windows)]
     {
         let local_app_data = env::var_os("LOCALAPPDATA")
@@ -514,16 +537,18 @@ fn install_embedded_plugin() -> Result<String> {
         let plugin_dir = local_app_data.join("Roblox").join("Plugins");
         fs::create_dir_all(&plugin_dir)
             .with_context(|| format!("failed to create {}", plugin_dir.display()))?;
-        let path = plugin_dir.join("RoldexStudio.plugin.lua");
-        fs::write(&path, EMBEDDED_PLUGIN)
-            .with_context(|| format!("failed to write {}", path.display()))?;
-        return Ok(path.display().to_string());
+        let main_path = plugin_dir.join("RoldexStudio.plugin.lua");
+        let runtime_path = plugin_dir.join("RoldexStudioRuntime.plugin.lua");
+        fs::write(&main_path, EMBEDDED_PLUGIN)
+            .with_context(|| format!("failed to write {}", main_path.display()))?;
+        fs::write(&runtime_path, EMBEDDED_RUNTIME_PLUGIN)
+            .with_context(|| format!("failed to write {}", runtime_path.display()))?;
+        return Ok(vec![main_path.display().to_string(), runtime_path.display().to_string()]);
     }
-
     #[cfg(not(windows))]
     {
         bail!(
-            "automatic Studio plugin repair is currently implemented for Windows; reinstall the plugin from the Roldex repository on this operating system"
+            "automatic Studio plugin repair is currently implemented for Windows; reinstall the plugins from the Roldex repository on this operating system"
         )
     }
 }
@@ -551,28 +576,38 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn broker_round_trip() {
+    async fn broker_routes_main_and_runtime_commands() {
         let broker = StudioBroker::new();
         broker.mark_seen();
-        let cloned = broker.clone();
-        let task = tokio::spawn(async move {
-            cloned
-                .submit("query", json!({"operation":"selection"}))
-                .await
+
+        let main = broker.clone();
+        let main_task = tokio::spawn(async move {
+            main.submit_action("query", json!({"operation":"selection"})).await
         });
         let commands = broker.poll(4).await;
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].action, "query");
-        assert!(
-            broker
-                .complete(StudioCommandResult {
-                    id: commands[0].id.clone(),
-                    ok: true,
-                    output: Some(json!({"items": []})),
-                    error: None,
-                })
-                .await
-        );
-        assert!(task.await.expect("join").expect("result").ok);
+        assert!(broker.complete(StudioCommandResult {
+            id: commands[0].id.clone(),
+            ok: true,
+            output: Some(json!({"items": []})),
+            error: None,
+        }).await);
+        assert!(main_task.await.expect("join").expect("result").ok);
+
+        let runtime = broker.clone();
+        let runtime_task = tokio::spawn(async move {
+            runtime.submit_action("capture", json!({})).await
+        });
+        let commands = broker.poll_runtime(4).await;
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].action, "capture");
+        assert!(broker.complete(StudioCommandResult {
+            id: commands[0].id.clone(),
+            ok: true,
+            output: Some(json!({"data_base64": "cG5n"})),
+            error: None,
+        }).await);
+        assert!(runtime_task.await.expect("join").expect("result").ok);
     }
 }

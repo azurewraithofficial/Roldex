@@ -1,4 +1,8 @@
+use std::path::Path;
+
 use anyhow::{Context, Result, bail};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 
 use crate::AiConfig;
 use crate::WorkspaceFs;
@@ -6,6 +10,8 @@ use crate::project::ProjectSummary;
 use crate::prompt::ROBLOX_SYSTEM_PROMPT;
 use crate::provider::{ChatMessage, OpenAiCompatibleProvider};
 use crate::tools::{AgentEvent, execute_tool, tool_definitions};
+
+const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 
 pub struct Agent {
     provider: OpenAiCompatibleProvider,
@@ -26,6 +32,45 @@ impl Agent {
         &mut self,
         input: &str,
         fs: &WorkspaceFs,
+        on_event: F,
+    ) -> Result<String>
+    where
+        F: FnMut(AgentEvent),
+    {
+        self.run_turn(input, ChatMessage::user(input), fs, on_event)
+            .await
+    }
+
+    pub async fn chat_with_image<F>(
+        &mut self,
+        input: &str,
+        image_path: &str,
+        fs: &WorkspaceFs,
+        on_event: F,
+    ) -> Result<String>
+    where
+        F: FnMut(AgentEvent),
+    {
+        let mime = image_mime(image_path)?;
+        let bytes = fs.read_bytes(image_path, MAX_IMAGE_BYTES)?;
+        if bytes.is_empty() {
+            bail!("image file is empty");
+        }
+        let data_url = format!("data:{mime};base64,{}", STANDARD.encode(bytes));
+        self.run_turn(
+            input,
+            ChatMessage::user_with_image(input, data_url),
+            fs,
+            on_event,
+        )
+        .await
+    }
+
+    async fn run_turn<F>(
+        &mut self,
+        memory_input: &str,
+        user_message: ChatMessage,
+        fs: &WorkspaceFs,
         mut on_event: F,
     ) -> Result<String>
     where
@@ -39,7 +84,7 @@ impl Agent {
             self.project.describe()
         )));
         messages.extend(self.history.iter().cloned());
-        messages.push(ChatMessage::user(input));
+        messages.push(user_message);
 
         const MAX_TOOL_STEPS: usize = 8;
         for _ in 0..MAX_TOOL_STEPS {
@@ -50,7 +95,7 @@ impl Agent {
                     .content
                     .filter(|content| !content.trim().is_empty())
                     .context("AI provider returned an empty final response")?;
-                self.remember(input, &answer);
+                self.remember(memory_input, &answer);
                 return Ok(answer);
             }
 
@@ -79,5 +124,33 @@ impl Agent {
             let remove = self.history.len() - MAX_HISTORY_MESSAGES;
             self.history.drain(0..remove);
         }
+    }
+}
+
+fn image_mime(image_path: &str) -> Result<&'static str> {
+    let extension = Path::new(image_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    match extension.as_str() {
+        "png" => Ok("image/png"),
+        "jpg" | "jpeg" => Ok("image/jpeg"),
+        "webp" => Ok("image/webp"),
+        "gif" => Ok("image/gif"),
+        _ => bail!("unsupported image type; use PNG, JPEG, WebP or GIF"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_supported_vision_images() {
+        assert_eq!(image_mime("ui.PNG").expect("png"), "image/png");
+        assert_eq!(image_mime("error.jpeg").expect("jpeg"), "image/jpeg");
+        assert!(image_mime("place.rbxl").is_err());
     }
 }

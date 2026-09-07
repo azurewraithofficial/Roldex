@@ -19,14 +19,21 @@ It is intentionally focused on **Roblox Studio and Luau**, rather than general-p
 
 ## Current foundation
 
-The initial Rust workspace contains:
+The Rust workspace currently contains:
 
 - `roldex-cli` — interactive terminal application
-- `roldex-core` — configuration, provider, Roblox prompt, project detection and safe filesystem primitives
+- `roldex-core` — configuration, provider, Roblox prompt, project detection and agent runtime
 - default OpenRouter-compatible provider configuration using `openrouter/free`
 - Roblox/Rojo/Luau project detection
 - workspace permission modes
-- basic interactive commands
+- structured model tool calls from normal chat
+- bounded project tree inspection, text search and file reads
+- safe exact-match patches plus create/replace/delete file operations
+- Git status and token-efficient Git diff inspection
+- workspace path and symlink-escape protection
+- deterministic Luau/Roblox audit findings with severity, rule IDs, file/line locations and remediation
+
+The current audit baseline detects legacy scheduler calls, client-side DataStore usage, deprecated BodyMovers, risky `InvokeClient()` usage, possible non-yielding loops, server scripts in replicated locations, and heuristic remote-validation risks.
 
 ## Build
 
@@ -64,7 +71,7 @@ Inside the interactive CLI:
 /quit              Exit Roldex
 ```
 
-Normal text is sent to the configured AI with the Roblox-specialist system prompt and current project context.
+Normal text is sent to the configured AI with the Roblox-specialist system prompt and current project context. The agent can inspect structure, search code, analyze Luau, read relevant files, patch or write files, and review Git changes through structured tools.
 
 ## Configuration
 
@@ -72,6 +79,6 @@ Copy `roldex.config.example.toml` to `roldex.toml` in a project when you want cu
 
 ## Planned
 
-Next major pieces include tool-calling for automatic file edits, Git tools, Luau analysis, Roblox documentation retrieval, image-path vision input, security scanning, and the Roldex Studio plugin.
+Next major pieces include Git restore/undo, image-path vision input, Roblox documentation retrieval, streaming output, deeper Luau analysis, richer security audits, and the Roldex Studio plugin.
 
 Roldex is not affiliated with Roblox Corporation or OpenAI.

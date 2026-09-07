@@ -55,14 +55,33 @@ impl WorkspaceFs {
         self.resolve_existing(requested)
     }
 
+    pub fn resolve_user_write_path(&self, requested: impl AsRef<Path>) -> Result<PathBuf> {
+        let requested = requested.as_ref();
+        if requested.as_os_str().is_empty() {
+            bail!("path cannot be empty");
+        }
+
+        if requested.is_absolute() {
+            if self.mode != PermissionMode::FullAccess {
+                bail!("absolute writes outside the active project require full-access mode");
+            }
+            return self.resolve_absolute_for_write(requested);
+        }
+
+        self.resolve_for_write(requested)
+    }
+
     pub fn ensure_writable(&self) -> Result<()> {
         self.require_write()
     }
 
-    pub fn read_text(&self, relative: impl AsRef<Path>) -> Result<String> {
-        let path = self.resolve_existing(relative.as_ref())?;
+    pub fn read_text(&self, requested: impl AsRef<Path>) -> Result<String> {
+        let path = self.resolve_user_read_path(requested)?;
         let metadata =
             fs::metadata(&path).with_context(|| format!("failed to inspect {}", path.display()))?;
+        if !metadata.is_file() {
+            bail!("{} is not a file", path.display());
+        }
         if metadata.len() > MAX_TEXT_FILE_BYTES {
             bail!(
                 "{} is too large for one read ({} bytes; limit is {} bytes)",
@@ -92,7 +111,7 @@ impl WorkspaceFs {
         fs::read(&path).with_context(|| format!("failed to read {}", path.display()))
     }
 
-    pub fn write_text(&self, relative: impl AsRef<Path>, content: &str) -> Result<()> {
+    pub fn write_text(&self, requested: impl AsRef<Path>, content: &str) -> Result<()> {
         self.require_write()?;
         if content.len() > MAX_WRITE_BYTES {
             bail!(
@@ -101,12 +120,12 @@ impl WorkspaceFs {
             );
         }
 
-        let path = self.resolve_for_write(relative.as_ref())?;
+        let path = self.resolve_user_write_path(requested)?;
         self.create_parent(&path)?;
         fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))
     }
 
-    pub fn write_bytes(&self, relative: impl AsRef<Path>, content: &[u8]) -> Result<()> {
+    pub fn write_bytes(&self, requested: impl AsRef<Path>, content: &[u8]) -> Result<()> {
         self.require_write()?;
         if content.len() > MAX_BINARY_WRITE_BYTES {
             bail!(
@@ -115,14 +134,14 @@ impl WorkspaceFs {
             );
         }
 
-        let path = self.resolve_for_write(relative.as_ref())?;
+        let path = self.resolve_user_write_path(requested)?;
         self.create_parent(&path)?;
         fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))
     }
 
     pub fn replace_text(
         &self,
-        relative: impl AsRef<Path>,
+        requested: impl AsRef<Path>,
         old_text: &str,
         new_text: &str,
     ) -> Result<()> {
@@ -131,8 +150,8 @@ impl WorkspaceFs {
             bail!("old_text cannot be empty");
         }
 
-        let relative = relative.as_ref();
-        let content = self.read_text(relative)?;
+        let requested = requested.as_ref();
+        let content = self.read_text(requested)?;
         let occurrences = content.matches(old_text).count();
         if occurrences != 1 {
             bail!(
@@ -141,12 +160,17 @@ impl WorkspaceFs {
         }
 
         let updated = content.replacen(old_text, new_text, 1);
-        self.write_text(relative, &updated)
+        self.write_text(requested, &updated)
     }
 
-    pub fn delete_file(&self, relative: impl AsRef<Path>) -> Result<()> {
+    pub fn delete_file(&self, requested: impl AsRef<Path>) -> Result<()> {
         self.require_write()?;
-        let path = self.resolve_existing(relative.as_ref())?;
+        let path = self.resolve_user_read_path(requested)?;
+        let metadata = fs::metadata(&path)
+            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        if !metadata.is_file() {
+            bail!("{} is not a file", path.display());
+        }
         fs::remove_file(&path).with_context(|| format!("failed to delete {}", path.display()))
     }
 
@@ -170,7 +194,7 @@ impl WorkspaceFs {
             bail!("path cannot be empty");
         }
         if relative.is_absolute() {
-            bail!("absolute paths are not allowed in workspace mutation tools");
+            bail!("absolute paths are not workspace-relative");
         }
         if relative.components().any(|component| {
             matches!(
@@ -215,6 +239,25 @@ impl WorkspaceFs {
             .with_context(|| format!("failed to resolve {}", ancestor.display()))?;
         self.require_inside_root(&canonical_ancestor)?;
         Ok(path)
+    }
+
+    fn resolve_absolute_for_write(&self, path: &Path) -> Result<PathBuf> {
+        if path.exists() {
+            return path
+                .canonicalize()
+                .with_context(|| format!("failed to resolve {}", path.display()));
+        }
+
+        let mut ancestor = path.parent().context("file path has no parent")?;
+        while !ancestor.exists() {
+            ancestor = ancestor
+                .parent()
+                .context("could not find an existing ancestor for absolute path")?;
+        }
+        ancestor
+            .canonicalize()
+            .with_context(|| format!("failed to resolve {}", ancestor.display()))?;
+        Ok(path.to_path_buf())
     }
 
     fn require_inside_root(&self, path: &Path) -> Result<()> {
@@ -283,6 +326,22 @@ mod tests {
                 .is_err()
         );
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn full_access_can_edit_absolute_paths_outside_project() {
+        let root = test_dir("full-root");
+        let outside = test_dir("full-outside");
+        fs::create_dir_all(&root).expect("create root");
+        fs::create_dir_all(&outside).expect("create outside");
+        let target = outside.join("tool-config.txt");
+        let workspace = WorkspaceFs::new(&root, PermissionMode::FullAccess).expect("workspace");
+        workspace.write_text(&target, "fixed").expect("absolute write");
+        assert_eq!(workspace.read_text(&target).expect("absolute read"), "fixed");
+        workspace.delete_file(&target).expect("absolute delete");
+        assert!(!target.exists());
+        fs::remove_dir_all(root).expect("cleanup root");
+        fs::remove_dir_all(outside).expect("cleanup outside");
     }
 
     #[cfg(unix)]

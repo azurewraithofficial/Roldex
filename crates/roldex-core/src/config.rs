@@ -43,6 +43,12 @@ impl Config {
                 config.ai.request_timeout_seconds = seconds.clamp(15, 300);
             }
         }
+        if let Ok(sort) = env::var("ROLDEX_OPENROUTER_SORT") {
+            let sort = sort.trim().to_ascii_lowercase();
+            if matches!(sort.as_str(), "latency" | "throughput" | "price") {
+                config.ai.openrouter_sort = sort;
+            }
+        }
 
         Ok(config)
     }
@@ -58,6 +64,7 @@ pub struct AiConfig {
     pub temperature: f32,
     pub request_timeout_seconds: u64,
     pub max_retries: u32,
+    pub openrouter_sort: String,
 }
 
 impl Default for AiConfig {
@@ -70,6 +77,7 @@ impl Default for AiConfig {
             temperature: 0.2,
             request_timeout_seconds: 75,
             max_retries: 2,
+            openrouter_sort: "latency".into(),
         }
     }
 }
@@ -126,5 +134,6 @@ mod tests {
         assert_eq!(config.ai.model, "openrouter/free");
         assert_eq!(config.ai.request_timeout_seconds, 75);
         assert_eq!(config.ai.max_retries, 2);
+        assert_eq!(config.ai.openrouter_sort, "latency");
     }
 }

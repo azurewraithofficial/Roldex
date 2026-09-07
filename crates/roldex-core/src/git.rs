@@ -51,13 +51,7 @@ pub fn git_unstage_file(root: &Path, path: &str) -> Result<String> {
 pub fn git_restore_worktree_file(root: &Path, path: &str) -> Result<String> {
     run_git(
         root,
-        &[
-            "--literal-pathspecs",
-            "restore",
-            "--worktree",
-            "--",
-            path,
-        ],
+        &["--literal-pathspecs", "restore", "--worktree", "--", path],
     )?;
     git_path_status(root, path)
 }

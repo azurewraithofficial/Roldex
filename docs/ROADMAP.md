@@ -16,6 +16,7 @@
 - [x] automatic create/replace/delete workflow
 - [x] patch-based exact edits for lower token usage
 - [x] Git status/diff tools
+- [x] deterministic Luau/Roblox audit baseline
 - [ ] Git restore/undo tools
 - [ ] image-path vision input
 - [ ] Roblox docs web retrieval
@@ -23,10 +24,10 @@
 
 ## v0.2 — Roblox intelligence
 
-- Luau analyzer integration
-- Roblox security scanner
-- RemoteEvent/RemoteFunction audit tools
-- DataStore usage checks
+- deeper Luau analyzer integration
+- expanded Roblox security scanner
+- dedicated RemoteEvent/RemoteFunction audit tools
+- deeper DataStore usage checks
 - Rojo-aware placement
 - documentation RAG and source attribution
 - richer debugging workflow

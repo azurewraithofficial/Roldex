@@ -1,5 +1,6 @@
 mod agent;
 mod analysis;
+mod computer;
 mod config;
 mod docs;
 mod git;

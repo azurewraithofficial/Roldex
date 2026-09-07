@@ -1,12 +1,13 @@
 use std::collections::{HashMap, VecDeque};
-use std::env;
-use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
+#[cfg(windows)]
+use anyhow::Context;
+#[cfg(windows)]
+use std::{env, fs, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, oneshot};
@@ -15,9 +16,10 @@ use tokio::time::timeout;
 use crate::ToolCall;
 use crate::tools::{AgentEvent, ToolExecution};
 
-const STUDIO_COMMAND_TIMEOUT: Duration = Duration::from_secs(45);
+const STUDIO_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const STUDIO_CONNECTED_WINDOW_SECS: u64 = 5;
 const MAX_QUEUE: usize = 128;
+#[cfg(windows)]
 const EMBEDDED_PLUGIN: &str = include_str!("../../../plugins/roldex-studio/RoldexStudio.plugin.lua");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,7 +134,7 @@ impl StudioBroker {
             Err(_) => {
                 self.inner.pending.lock().await.remove(&id);
                 bail!(
-                    "Studio command timed out after {} seconds. The plugin may be busy, disconnected, or blocked by a Studio permission/prompt.",
+                    "Studio command timed out after {} seconds. The plugin may be busy, disconnected, playtesting, or blocked by a Studio permission/prompt.",
                     STUDIO_COMMAND_TIMEOUT.as_secs()
                 )
             }
@@ -175,11 +177,13 @@ pub fn tool_definitions() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "studio_batch",
-                "description": "Apply an atomic, undoable batch of Roblox Studio changes. Use this for creating or modifying Parts, Models, folders, GUIs, sounds, effects, constraints, scripts, remotes, animations, and other Instances. Supported action op values: create, set_properties, set_attributes, move, clone, delete, update_script, select, add_tag, remove_tag, pivot_to, terrain_fill_block. A create/clone action may include ref so later actions can target '$ref'. Property values may be primitives or typed objects using $type: Vector3{x,y,z}, Vector2{x,y}, Color3{r,g,b}, UDim{scale,offset}, UDim2{x_scale,x_offset,y_scale,y_offset}, CFrame{components:[12 numbers]}, Enum{enum_type,item}, BrickColor{name}, NumberRange{min,max}, Rect{min_x,min_y,max_x,max_y}, Instance{path}. For scripts, create can include source or update_script can replace source via ScriptEditorService. Verify important changes afterward with studio_query.",
+                "description": "Apply an atomic, undoable batch of Roblox Studio changes. Changes execute one action at a time in Studio so the user can watch Roldex build in real time. Prefer this tool and real Instances over generating one-off builder scripts. Supported action op values: create, set_properties, set_attributes, move, clone, delete, update_script, select, add_tag, remove_tag, pivot_to, terrain_fill_block, terrain_fill_ball, terrain_clear. A create/clone action may include ref so later actions can target '$ref'. Property values may be primitives or typed objects using $type: Vector3{x,y,z}, Vector2{x,y}, Color3{r,g,b}, UDim{scale,offset}, UDim2{x_scale,x_offset,y_scale,y_offset}, CFrame{components:[12 numbers]}, Enum{enum_type,item}, BrickColor{name}, NumberRange{min,max}, Rect{min_x,min_y,max_x,max_y}, Instance{path}. For scripts, create can include source or update_script can replace source through ScriptEditorService. Keep live_delay_ms around 30-80 for visible builds and lower it only for very large repetitive batches. Verify important changes afterward with studio_query.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "label": { "type": "string", "description": "Short undo-history label" },
+                        "live_delay_ms": { "type": "integer", "minimum": 0, "maximum": 500 },
+                        "highlight_created": { "type": "boolean" },
                         "actions": {
                             "type": "array",
                             "minItems": 1,
@@ -188,6 +192,24 @@ pub fn tool_definitions() -> Vec<Value> {
                         }
                     },
                     "required": ["actions"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "studio_test",
+                "description": "Run an automated Roblox Studio smoke/play/multiplayer test and collect Studio output. Use after meaningful code, map, UI, gameplay, networking, or spawn changes. Modes: run, play, multiplayer. Tests are automatically bounded by timeout_seconds; multiplayer supports 1-8 players. Treat output errors/warnings as signals to inspect and repair before finishing.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "mode": { "type": "string", "enum": ["run", "play", "multiplayer"] },
+                        "players": { "type": "integer", "minimum": 1, "maximum": 8 },
+                        "timeout_seconds": { "type": "integer", "minimum": 2, "maximum": 60 },
+                        "args": {}
+                    },
+                    "required": ["mode"],
                     "additionalProperties": false
                 }
             }
@@ -226,7 +248,8 @@ pub async fn execute_tool(
     match call.function.name.as_str() {
         "studio_health" => Some(execute_health(broker).await),
         "studio_query" => Some(execute_remote(call, broker, "query", "Studio query").await),
-        "studio_batch" => Some(execute_remote(call, broker, "batch", "Studio edit batch").await),
+        "studio_batch" => Some(execute_remote(call, broker, "batch", "Studio live build").await),
+        "studio_test" => Some(execute_remote(call, broker, "test", "Studio playtest").await),
         "studio_undo" => Some(execute_remote(call, broker, "undo", "Studio undo").await),
         "studio_redo" => Some(execute_remote(call, broker, "redo", "Studio redo").await),
         "repair_studio_plugin" => Some(execute_repair_plugin()),
@@ -315,7 +338,6 @@ fn install_embedded_plugin() -> Result<String> {
 
     #[cfg(not(windows))]
     {
-        let _ = (&EMBEDDED_PLUGIN, &env::vars_os, &fs::read_dir, PathBuf::new());
         bail!("automatic Studio plugin repair is currently implemented for Windows; reinstall the plugin from the Roldex repository on this operating system")
     }
 }
@@ -340,18 +362,24 @@ mod tests {
         let broker = StudioBroker::new();
         broker.mark_seen();
         let cloned = broker.clone();
-        let task = tokio::spawn(async move { cloned.submit("query", json!({"operation":"selection"})).await });
+        let task = tokio::spawn(async move {
+            cloned
+                .submit("query", json!({"operation":"selection"}))
+                .await
+        });
         let commands = broker.poll(4).await;
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].action, "query");
-        assert!(broker
-            .complete(StudioCommandResult {
-                id: commands[0].id.clone(),
-                ok: true,
-                output: Some(json!({"items": []})),
-                error: None,
-            })
-            .await);
+        assert!(
+            broker
+                .complete(StudioCommandResult {
+                    id: commands[0].id.clone(),
+                    ok: true,
+                    output: Some(json!({"items": []})),
+                    error: None,
+                })
+                .await
+        );
         assert!(task.await.expect("join").expect("result").ok);
     }
 }

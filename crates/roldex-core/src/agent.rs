@@ -112,6 +112,7 @@ impl Agent {
         F: FnMut(AgentEvent),
     {
         let mut tools = tool_definitions();
+        tools.extend(crate::computer::tool_definitions());
         tools.extend(crate::docs::tool_definitions());
         tools.extend(crate::project_intel::tool_definitions());
         tools.extend(crate::media::tool_definitions());
@@ -156,6 +157,8 @@ impl Agent {
                 let execution = if let Some(execution) =
                     crate::studio::execute_tool(&call, self.studio.as_ref()).await
                 {
+                    execution
+                } else if let Some(execution) = crate::computer::execute_tool(&call, fs).await {
                     execution
                 } else if let Some(execution) = crate::docs::execute_tool(&call).await {
                     execution

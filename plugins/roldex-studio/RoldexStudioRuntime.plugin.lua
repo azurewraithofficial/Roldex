@@ -8,6 +8,8 @@ local UserInputService = game:GetService("UserInputService")
 local EncodingService = game:GetService("EncodingService")
 local LogService = game:GetService("LogService")
 local ReflectionService = game:GetService("ReflectionService")
+local ScriptEditorService = game:GetService("ScriptEditorService")
+local StarterPlayer = game:GetService("StarterPlayer")
 
 local DEFAULT_BRIDGE_URL = "http://127.0.0.1:38247"
 local MAX_LOGS = 200
@@ -15,6 +17,60 @@ local MAX_STEPS = 80
 local MAX_CAPTURES = 2
 local MAX_CAPTURE_WIDTH = 960
 local MAX_CAPTURE_HEIGHT = 540
+
+local CHAT_HARNESS_SOURCE = [[
+local TextChatService = game:GetService("TextChatService")
+local StudioTestService = game:GetService("StudioTestService")
+
+local args = StudioTestService:GetTestArgs()
+if type(args) ~= "table" then
+	return
+end
+
+local messages = args.__roldex_chat_messages
+if type(messages) ~= "table" or #messages == 0 then
+	return
+end
+
+local channels = TextChatService:WaitForChild("TextChannels", 10)
+if not channels then
+	warn("[RoldexChatTest][ERROR] TextChatService.TextChannels was not created")
+	return
+end
+
+local started = os.clock()
+for _, entry in ipairs(messages) do
+	local targetAt = math.max(tonumber(entry.at_seconds) or 0, 0)
+	local remaining = targetAt - (os.clock() - started)
+	if remaining > 0 then
+		task.wait(remaining)
+	end
+
+	local channelName = tostring(entry.channel or "RBXGeneral")
+	local channel = channels:FindFirstChild(channelName)
+	if not channel then
+		channel = channels:WaitForChild(channelName, 5)
+	end
+	if not channel and channelName ~= "RBXGeneral" then
+		channel = channels:FindFirstChild("RBXGeneral") or channels:WaitForChild("RBXGeneral", 5)
+	end
+	if not channel or not channel:IsA("TextChannel") then
+		warn("[RoldexChatTest][ERROR] Chat channel was unavailable: " .. channelName)
+		continue
+	end
+
+	local text = tostring(entry.text or "Roldex chat test")
+	local metadata = tostring(entry.metadata or "")
+	local ok, result = pcall(function()
+		return channel:SendAsync(text, metadata)
+	end)
+	if ok then
+		print(("[RoldexChatTest][SENT] %s :: %s"):format(channel.Name, text))
+	else
+		warn("[RoldexChatTest][ERROR] " .. tostring(result))
+	end
+end
+]]
 
 local function sanitizeBridgeUrl(value)
 	value = tostring(value or ""):gsub("%s+$", ""):gsub("^%s+", ""):gsub("/$", "")
@@ -99,6 +155,68 @@ local function enumItem(enumName, itemName)
 	return item
 end
 
+local function chatStepDelay(step)
+	return math.clamp(tonumber(step.delay_seconds) or 0, 0, 10)
+end
+
+local function chatStepSettle(step)
+	return math.clamp(tonumber(step.settle_seconds) or 0.9, 0.1, 5)
+end
+
+local function estimatedStepDuration(step)
+	local kind = tostring(step.kind or "wait")
+	if kind == "wait" then
+		return math.clamp(tonumber(step.seconds) or 0.1, 0, 10)
+	elseif kind == "key" or kind == "mouse_button" then
+		return math.clamp(tonumber(step.hold_seconds) or 0.05, 0, 5)
+	elseif kind == "chat" then
+		return chatStepDelay(step) + chatStepSettle(step)
+	elseif kind == "capture" then
+		return 0.15
+	end
+	return 0
+end
+
+local function buildChatSchedule(steps, startDelay)
+	local elapsed = math.max(tonumber(startDelay) or 0, 0)
+	local messages = {}
+	for index, step in ipairs(steps or {}) do
+		if index > MAX_STEPS then
+			break
+		end
+		local kind = tostring(step.kind or "wait")
+		if kind == "chat" then
+			local sendAt = elapsed + chatStepDelay(step)
+			table.insert(messages, {
+				at_seconds = sendAt,
+				text = tostring(step.text or "Roldex chat test"),
+				metadata = tostring(step.metadata or ""),
+				channel = tostring(step.channel or "RBXGeneral"),
+			})
+		end
+		elapsed += estimatedStepDuration(step)
+	end
+	return messages
+end
+
+local function installChatHarness()
+	local starterPlayerScripts = StarterPlayer:WaitForChild("StarterPlayerScripts")
+	local harness = Instance.new("LocalScript")
+	harness.Name = "__RoldexChatTestHarness_" .. HttpService:GenerateGUID(false):gsub("%-", "")
+	harness.Archivable = false
+	harness.Parent = starterPlayerScripts
+	local ok, errorMessage = pcall(function()
+		ScriptEditorService:UpdateSourceAsync(harness, function()
+			return CHAT_HARNESS_SOURCE
+		end)
+	end)
+	if not ok then
+		harness:Destroy()
+		error("could not install temporary Roldex chat test harness: " .. tostring(errorMessage))
+	end
+	return harness
+end
+
 local function runInputSteps(steps, captures)
 	local input = virtualInput()
 	for index, step in ipairs(steps or {}) do
@@ -128,6 +246,8 @@ local function runInputSteps(steps, captures)
 			input:SendMouseButton(position, button, false, tonumber(step.repeat_count) or 0)
 		elseif kind == "text" then
 			input:SendTextInput(tostring(step.text or ""))
+		elseif kind == "chat" then
+			task.wait(chatStepDelay(step) + chatStepSettle(step))
 		elseif kind == "pointer" then
 			local action = {}
 			if step.wheel then
@@ -173,17 +293,42 @@ local function collectLogs()
 	end
 end
 
+local function copyDictionary(value)
+	local result = {}
+	for key, item in pairs(value or {}) do
+		result[key] = item
+	end
+	return result
+end
+
 local function runScenarioTest(payload)
 	local mode = tostring(payload.mode or "play")
 	local players = math.clamp(tonumber(payload.players) or 2, 1, 8)
 	local timeoutSeconds = math.clamp(tonumber(payload.timeout_seconds) or 15, 2, 60)
+	local startDelay = math.clamp(tonumber(payload.start_delay_seconds) or 1.0, 0, 10)
+	local chatMessages = buildChatSchedule(payload.steps or {}, startDelay)
+	if #chatMessages > 0 then
+		assert(mode ~= "run", "chat scenario steps require play or multiplayer mode because TextChannel:SendAsync is client-side")
+		assert(payload.args == nil or type(payload.args) == "table", "chat scenario steps require table-shaped test args")
+	end
+
 	local captures = {}
 	local logs, finishLogs = collectLogs()
 	local scenarioError = nil
+	local chatHarness = nil
+	local args = payload.args
+	if args == nil then
+		args = { roldex = true, visual_test = true }
+	end
+	if #chatMessages > 0 then
+		args = copyDictionary(args)
+		args.__roldex_chat_messages = chatMessages
+		chatHarness = installChatHarness()
+	end
 
 	local runner = task.spawn(function()
 		local ok, errorMessage = pcall(function()
-			task.wait(math.clamp(tonumber(payload.start_delay_seconds) or 1.0, 0, 10))
+			task.wait(startDelay)
 			runInputSteps(payload.steps or {}, captures)
 			if payload.capture_at_end ~= false and #captures < MAX_CAPTURES then
 				task.wait(0.15)
@@ -213,7 +358,6 @@ local function runScenarioTest(payload)
 	end)
 
 	local ok, result = pcall(function()
-		local args = payload.args or { roldex = true, visual_test = true }
 		if mode == "run" then
 			return StudioTestService:ExecuteRunModeAsync(args)
 		elseif mode == "play" then
@@ -230,6 +374,11 @@ local function runScenarioTest(payload)
 	pcall(function()
 		task.cancel(runner)
 	end)
+	if chatHarness then
+		pcall(function()
+			chatHarness:Destroy()
+		end)
+	end
 	local warningCount, errorCount = finishLogs()
 	if not ok then
 		error(result)
@@ -242,6 +391,8 @@ local function runScenarioTest(payload)
 		mode = mode,
 		players = mode == "multiplayer" and players or nil,
 		result = tostring(result),
+		test_goal = tostring(payload.review_goal or ""),
+		chat_messages_requested = #chatMessages,
 		warning_count = warningCount,
 		error_count = errorCount,
 		logs = logs,

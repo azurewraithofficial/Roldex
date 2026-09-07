@@ -1,6 +1,7 @@
 mod bridge;
 mod intent;
 #[cfg_attr(not(windows), allow(unused_mut))]
+#[allow(clippy::collapsible_str_replace)]
 mod ui;
 
 use std::path::PathBuf;

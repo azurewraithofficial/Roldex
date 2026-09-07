@@ -357,10 +357,7 @@ impl Agent {
         if bytes.is_empty() {
             bail!("image file is empty: {image_path}");
         }
-        Ok(format!(
-            "data:{mime};base64,{}",
-            STANDARD.encode(bytes)
-        ))
+        Ok(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
     }
 
     fn remember(&mut self, input: &str, answer: &str) {

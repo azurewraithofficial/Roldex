@@ -5,22 +5,12 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
     pub ai: AiConfig,
     pub permissions: PermissionConfig,
     pub ui: UiConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            ai: AiConfig::default(),
-            permissions: PermissionConfig::default(),
-            ui: UiConfig::default(),
-        }
-    }
 }
 
 impl Config {
@@ -63,18 +53,13 @@ impl Default for AiConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionMode {
     ReadOnly,
+    #[default]
     Workspace,
     FullAccess,
-}
-
-impl Default for PermissionMode {
-    fn default() -> Self {
-        Self::Workspace
-    }
 }
 
 impl fmt::Display for PermissionMode {

@@ -23,11 +23,15 @@ jobs:
             target: x86_64-pc-windows-msvc
             binary: roldex.exe
             asset: roldex-windows-x86_64.exe
-          - os: macos-13
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            binary: roldex.exe
+            asset: roldex-windows-arm64.exe
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             binary: roldex
             asset: roldex-macos-x86_64
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             binary: roldex
             asset: roldex-macos-aarch64

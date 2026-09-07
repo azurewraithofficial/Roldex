@@ -79,6 +79,7 @@ local function button(name, text, position, size)
 	instance.Size = size
 	instance.BackgroundColor3 = colors.panelAlt
 	instance.BorderSizePixel = 0
+	instance.Active = true
 	instance.AutoButtonColor = true
 	instance.Font = Enum.Font.GothamSemibold
 	instance.Text = text
@@ -90,6 +91,12 @@ local function button(name, text, position, size)
 	corner.CornerRadius = UDim.new(0, 6)
 	corner.Parent = instance
 	return instance
+end
+
+local function setButtonEnabled(instance, enabled)
+	instance.Active = enabled
+	instance.AutoButtonColor = enabled
+	instance.TextColor3 = enabled and colors.text or colors.muted
 end
 
 local title = label(
@@ -156,7 +163,7 @@ promptBox.BorderSizePixel = 0
 promptBox.ClearTextOnFocus = false
 promptBox.Font = Enum.Font.Code
 promptBox.MultiLine = true
-promptBox.PlaceholderText = "Ask Roldex about the selected objects, active script, bug, UI, system, map, animation..."
+promptBox.PlaceholderText = "Ask about the selected object, active script, bug, UI, map, animation, or anything else in this Roblox project..."
 promptBox.Text = ""
 promptBox.TextColor3 = colors.text
 promptBox.PlaceholderColor3 = colors.muted
@@ -228,8 +235,7 @@ local applyButton = button(
 	UDim2.new(0, 0, 1, -38),
 	UDim2.new(1, 0, 0, 34)
 )
-applyButton.Enabled = false
-applyButton.AutoButtonColor = false
+setButtonEnabled(applyButton, false)
 
 local lastAnswer = ""
 
@@ -269,7 +275,7 @@ end
 
 local function collectSelection()
 	local result = {}
-	for index, instance in Selection:Get() do
+	for index, instance in ipairs(Selection:Get()) do
 		if index > MAX_SELECTION_ITEMS then
 			break
 		end
@@ -311,6 +317,16 @@ local function request(options)
 	return HttpService:RequestAsync(options)
 end
 
+local function responseDetail(response)
+	if type(response) ~= "table" then
+		return tostring(response)
+	end
+	if response.Body and response.Body ~= "" then
+		return ("HTTP %s: %s"):format(tostring(response.StatusCode), tostring(response.Body))
+	end
+	return "HTTP " .. tostring(response.StatusCode)
+end
+
 local function checkHealth()
 	setStatus("Checking bridge...", "neutral")
 	local ok, response = pcall(function()
@@ -335,20 +351,22 @@ end
 
 local function refreshApplyState()
 	local canApply = isScriptContainer(StudioService.ActiveScript) and extractLuauCode(lastAnswer) ~= nil
-	applyButton.Enabled = canApply
-	applyButton.AutoButtonColor = canApply
+	setButtonEnabled(applyButton, canApply)
 	applyButton.BackgroundColor3 = canApply and colors.accentDark or colors.panelAlt
-	applyButton.TextColor3 = canApply and colors.text or colors.muted
 end
 
 local function sendPrompt()
+	if not sendButton.Active then
+		return
+	end
+
 	local message = promptBox.Text:gsub("%s+$", ""):gsub("^%s+", "")
 	if message == "" then
 		setStatus("Write a prompt first", "error")
 		return
 	end
 
-	sendButton.Enabled = false
+	setButtonEnabled(sendButton, false)
 	sendButton.Text = "Roldex is working..."
 	setStatus("Sending live Studio context...", "neutral")
 
@@ -370,9 +388,8 @@ local function sendPrompt()
 	end)
 
 	if not ok or not response.Success then
-		local detail = ok and ("HTTP " .. tostring(response.StatusCode)) or tostring(response)
 		lastAnswer = ""
-		outputLabel.Text = "Roldex request failed: " .. detail
+		outputLabel.Text = "Roldex request failed: " .. responseDetail(response)
 		setStatus("Request failed", "error")
 	else
 		local decodedOk, decoded = pcall(function()
@@ -390,11 +407,16 @@ local function sendPrompt()
 	end
 
 	refreshApplyState()
-	sendButton.Enabled = true
+	setButtonEnabled(sendButton, true)
+	sendButton.BackgroundColor3 = colors.accentDark
 	sendButton.Text = "Send with Studio Context"
 end
 
 local function applyFirstCodeBlock()
+	if not applyButton.Active then
+		return
+	end
+
 	local active = StudioService.ActiveScript
 	local code = extractLuauCode(lastAnswer)
 	if not isScriptContainer(active) or not code then
@@ -402,6 +424,7 @@ local function applyFirstCodeBlock()
 		return
 	end
 
+	setButtonEnabled(applyButton, false)
 	local ok, errorMessage = pcall(function()
 		ScriptEditorService:UpdateSourceAsync(active, function()
 			return code
@@ -413,6 +436,7 @@ local function applyFirstCodeBlock()
 	else
 		setStatus("Apply failed: " .. tostring(errorMessage), "error")
 	end
+	refreshApplyState()
 end
 
 bridgeUrlBox.FocusLost:Connect(function()
@@ -430,15 +454,15 @@ StudioService:GetPropertyChangedSignal("ActiveScript"):Connect(function()
 	refreshApplyState()
 end)
 
-sendButton.MouseButton1Click:Connect(function()
+sendButton.Activated:Connect(function()
 	task.spawn(sendPrompt)
 end)
 
-healthButton.MouseButton1Click:Connect(function()
+healthButton.Activated:Connect(function()
 	task.spawn(checkHealth)
 end)
 
-applyButton.MouseButton1Click:Connect(applyFirstCodeBlock)
+applyButton.Activated:Connect(applyFirstCodeBlock)
 
 toolbarButton.Click:Connect(function()
 	widget.Enabled = not widget.Enabled

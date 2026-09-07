@@ -16,6 +16,13 @@ const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_IMAGES_PER_TURN: usize = 4;
 const MAX_PROJECT_INSTRUCTIONS_CHARS: usize = 24_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerificationScope {
+    None,
+    Files,
+    Studio,
+}
+
 pub struct Agent {
     provider: OpenAiCompatibleProvider,
     project: ProjectSummary,
@@ -133,6 +140,7 @@ impl Agent {
         messages.extend(self.history.iter().cloned());
         messages.push(user_message);
 
+        let mut verification_scope = VerificationScope::None;
         const MAX_TOOL_STEPS: usize = 48;
         for _ in 0..MAX_TOOL_STEPS {
             let turn = self.provider.chat(&messages, &tools).await?;
@@ -142,6 +150,17 @@ impl Agent {
                     .content
                     .filter(|content| !content.trim().is_empty())
                     .context("AI provider returned an empty final response")?;
+
+                if verification_scope != VerificationScope::None {
+                    messages.push(ChatMessage::assistant(answer));
+                    messages.push(ChatMessage::system(match verification_scope {
+                        VerificationScope::Files => "You changed files/assets but have not verified the latest mutation yet. Before finishing, inspect the resulting file/diff/analysis or run an appropriate local check. If verification fails, repair and verify again.",
+                        VerificationScope::Studio => "You changed live Roblox Studio state but have not verified the latest mutation yet. Before finishing, inspect the resulting Instances/properties with studio_query and/or run studio_test when runtime behavior matters. Repair any problem and verify again.",
+                        VerificationScope::None => unreachable!(),
+                    }));
+                    continue;
+                }
+
                 self.remember(memory_input, &answer);
                 return Ok(answer);
             }
@@ -154,6 +173,7 @@ impl Agent {
 
             let mut had_tool_error = false;
             for call in tool_calls {
+                let tool_name = call.function.name.clone();
                 let execution = if let Some(execution) =
                     crate::studio::execute_tool(&call, self.studio.as_ref()).await
                 {
@@ -169,7 +189,19 @@ impl Agent {
                 } else {
                     execute_tool(&call, fs)
                 };
+
+                let succeeded = execution.output.contains("\"ok\":true");
                 had_tool_error |= execution.output.contains("\"ok\":false");
+
+                if succeeded {
+                    if let Some(scope) = mutation_scope(&tool_name) {
+                        verification_scope = scope;
+                    } else if verification_satisfies(&tool_name, verification_scope, &execution.output)
+                    {
+                        verification_scope = VerificationScope::None;
+                    }
+                }
+
                 on_event(execution.event);
                 messages.push(ChatMessage::tool(call.id, execution.output));
             }
@@ -193,6 +225,32 @@ impl Agent {
             let remove = self.history.len() - MAX_HISTORY_MESSAGES;
             self.history.drain(0..remove);
         }
+    }
+}
+
+fn mutation_scope(tool_name: &str) -> Option<VerificationScope> {
+    match tool_name {
+        "studio_batch" | "studio_undo" | "studio_redo" => Some(VerificationScope::Studio),
+        "write_file" | "replace_in_file" | "delete_file" | "git_restore_file"
+        | "generate_image" | "generate_voice_audio" | "repair_studio_plugin" => {
+            Some(VerificationScope::Files)
+        }
+        _ => None,
+    }
+}
+
+fn verification_satisfies(tool_name: &str, scope: VerificationScope, output: &str) -> bool {
+    match scope {
+        VerificationScope::None => false,
+        VerificationScope::Files => matches!(
+            tool_name,
+            "read_file" | "file_info" | "git_diff" | "analyze_luau" | "run_process"
+        ),
+        VerificationScope::Studio => match tool_name {
+            "studio_query" => true,
+            "studio_test" => output.contains("\"error_count\":0"),
+            _ => false,
+        },
     }
 }
 
@@ -245,5 +303,20 @@ mod tests {
         assert_eq!(image_mime("ui.PNG").expect("png"), "image/png");
         assert_eq!(image_mime("error.jpeg").expect("jpeg"), "image/jpeg");
         assert!(image_mime("place.rbxl").is_err());
+    }
+
+    #[test]
+    fn studio_mutations_require_studio_verification() {
+        assert_eq!(mutation_scope("studio_batch"), Some(VerificationScope::Studio));
+        assert!(verification_satisfies(
+            "studio_query",
+            VerificationScope::Studio,
+            "{\"ok\":true}"
+        ));
+        assert!(!verification_satisfies(
+            "file_info",
+            VerificationScope::Studio,
+            "{\"ok\":true}"
+        ));
     }
 }

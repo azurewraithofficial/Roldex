@@ -2,7 +2,7 @@ use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc as std_mpsc};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -57,8 +57,14 @@ struct LogEntry {
 
 #[derive(Debug)]
 enum WorkerUpdate {
-    Progress { id: u64, text: String },
-    Done { id: u64, result: Result<String, String> },
+    Progress {
+        id: u64,
+        text: String,
+    },
+    Done {
+        id: u64,
+        result: std::result::Result<String, String>,
+    },
 }
 
 struct AppState {
@@ -74,19 +80,17 @@ struct AppState {
 
 impl AppState {
     fn new(context: &UiContext) -> Self {
-        let mut log = Vec::new();
-        log.push(LogEntry {
-            kind: LogKind::System,
-            text: format!(
-                "Roldex v{} • {} • {}\nType what you want finished. Roldex will inspect, build, test, repair, and verify it.",
-                env!("CARGO_PKG_VERSION"),
-                context.project.kind,
-                context.config.permissions.mode
-            ),
-        });
         Self {
             input: String::new(),
-            log,
+            log: vec![LogEntry {
+                kind: LogKind::System,
+                text: format!(
+                    "Roldex v{} • {} • {}\nType the result you want. Roldex will inspect, build, test, repair, and verify it.",
+                    env!("CARGO_PKG_VERSION"),
+                    context.project.kind,
+                    context.config.permissions.mode
+                ),
+            }],
             busy: false,
             status: "Ready".into(),
             started_at: None,
@@ -106,6 +110,17 @@ impl AppState {
             self.log.drain(0..excess);
         }
     }
+
+    fn stop_active(&mut self, worker: &mut Option<JoinHandle<()>>) {
+        if let Some(handle) = worker.take() {
+            handle.abort();
+        }
+        self.busy = false;
+        self.active_id = None;
+        self.started_at = None;
+        self.status = "Stopped".into();
+        self.push(LogKind::System, "Stopped by user.");
+    }
 }
 
 struct TerminalSession {
@@ -114,7 +129,7 @@ struct TerminalSession {
 }
 
 impl TerminalSession {
-    fn new() -> Result<(Self, std_mpsc::Receiver<Event>)> {
+    fn new(event_tx: mpsc::UnboundedSender<Event>) -> Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, cursor::Hide)?;
@@ -122,12 +137,11 @@ impl TerminalSession {
         let mut terminal = Terminal::new(backend)?;
         terminal.clear()?;
 
-        let (event_tx, event_rx) = std_mpsc::channel();
         let stop_events = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop_events);
         thread::spawn(move || {
             while !thread_stop.load(Ordering::Relaxed) {
-                match event::poll(Duration::from_millis(80)) {
+                match event::poll(Duration::from_millis(70)) {
                     Ok(true) => match event::read() {
                         Ok(event) => {
                             if event_tx.send(event).is_err() {
@@ -142,13 +156,10 @@ impl TerminalSession {
             }
         });
 
-        Ok((
-            Self {
-                terminal,
-                stop_events,
-            },
-            event_rx,
-        ))
+        Ok(Self {
+            terminal,
+            stop_events,
+        })
     }
 }
 
@@ -168,23 +179,14 @@ impl Drop for TerminalSession {
 }
 
 pub async fn run(context: UiContext) -> Result<()> {
-    let (mut session, event_rx) = TerminalSession::new()?;
-    let (event_tx, mut async_events) = mpsc::unbounded_channel::<Event>();
-    thread::spawn(move || {
-        while let Ok(event) = event_rx.recv() {
-            if event_tx.send(event).is_err() {
-                break;
-            }
-        }
-    });
-
+    let (event_tx, mut events) = mpsc::unbounded_channel::<Event>();
+    let mut session = TerminalSession::new(event_tx)?;
     let (worker_tx, mut worker_rx) = mpsc::unbounded_channel::<WorkerUpdate>();
     let mut worker: Option<JoinHandle<()>> = None;
     let mut state = AppState::new(&context);
     let mut ticker = tokio::time::interval(Duration::from_millis(100));
-    let mut quit = false;
 
-    while !quit {
+    loop {
         draw(&mut session.terminal, &state, &context)?;
 
         tokio::select! {
@@ -215,41 +217,25 @@ pub async fn run(context: UiContext) -> Result<()> {
                     _ => {}
                 }
             }
-            Some(event) = async_events.recv() => {
+            Some(event) = events.recv() => {
                 match event {
                     Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
-                        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
-                            if let Some(handle) = worker.take() {
-                                handle.abort();
-                            }
-                            let cancelled = context.studio_broker.cancel_pending().await;
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && matches!(key.code, KeyCode::Char('c'))
+                        {
                             if state.busy {
-                                state.push(LogKind::System, format!("Stopped by user. Cancelled {cancelled} queued/pending Studio action(s)."));
+                                state.stop_active(&mut worker);
                             }
-                            quit = true;
-                            continue;
+                            break;
                         }
 
                         match key.code {
+                            KeyCode::Esc if state.busy => {
+                                state.stop_active(&mut worker);
+                            }
                             KeyCode::Esc => {
-                                if state.busy {
-                                    if let Some(handle) = worker.take() {
-                                        handle.abort();
-                                    }
-                                    let cancelled = context.studio_broker.cancel_pending().await;
-                                    state.busy = false;
-                                    state.active_id = None;
-                                    state.started_at = None;
-                                    state.status = "Stopped".into();
-                                    state.push(LogKind::System, if cancelled == 0 {
-                                        "Stopped by user.".to_string()
-                                    } else {
-                                        format!("Stopped by user. Cancelled {cancelled} queued/pending Studio action(s).")
-                                    });
-                                } else if !state.input.is_empty() {
-                                    state.input.clear();
-                                    state.status = "Input cleared".into();
-                                }
+                                state.input.clear();
+                                state.status = "Input cleared".into();
                             }
                             KeyCode::Enter if !state.busy => {
                                 let input = state.input.trim().to_string();
@@ -258,8 +244,7 @@ pub async fn run(context: UiContext) -> Result<()> {
                                     continue;
                                 }
                                 if handle_local_command(&input, &context, &mut state)? {
-                                    quit = true;
-                                    continue;
+                                    break;
                                 }
                                 state.push(LogKind::User, input.clone());
                                 state.busy = true;
@@ -268,19 +253,29 @@ pub async fn run(context: UiContext) -> Result<()> {
                                 let id = state.next_id;
                                 state.next_id = state.next_id.wrapping_add(1);
                                 state.active_id = Some(id);
-                                worker = Some(spawn_agent_request(id, input, &context, worker_tx.clone()));
+                                worker = Some(spawn_agent_request(
+                                    id,
+                                    input,
+                                    &context,
+                                    worker_tx.clone(),
+                                ));
                             }
                             KeyCode::Backspace if !state.busy => {
                                 state.input.pop();
                             }
-                            KeyCode::Char(ch) if !state.busy && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            KeyCode::Char(ch)
+                                if !state.busy
+                                    && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
                                 state.input.push(ch);
                             }
                             _ => {}
                         }
                     }
                     Event::Paste(text) if !state.busy => {
-                        state.input.push_str(&text.replace(['\r', '\n'], " "));
+                        state
+                            .input
+                            .push_str(&text.replace('\r', " ").replace('\n', " "));
                     }
                     _ => {}
                 }
@@ -340,6 +335,7 @@ fn spawn_agent_request(
                     .await
             }
         };
+
         let _ = updates.send(WorkerUpdate::Done {
             id,
             result: result.map_err(|error| format!("{error:#}")),
@@ -387,10 +383,19 @@ fn doctor_text(context: &UiContext) -> String {
         .arg("--version")
         .output()
         .is_ok_and(|output| output.status.success());
+
     let mut lines = vec![
         "Roldex doctor".to_string(),
-        format!("OS/arch: {}/{}", std::env::consts::OS, std::env::consts::ARCH),
-        format!("Project: {} ({})", context.project.root.display(), context.project.kind),
+        format!(
+            "OS/arch: {}/{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ),
+        format!(
+            "Project: {} ({})",
+            context.project.root.display(),
+            context.project.kind
+        ),
         format!("Permissions: {}", context.config.permissions.mode),
         format!(
             "AI key {}: {}",
@@ -399,29 +404,54 @@ fn doctor_text(context: &UiContext) -> String {
         ),
         format!(
             "Media key POLLINATIONS_API_KEY: {}",
-            if media_key { "configured" } else { "optional / missing" }
+            if media_key {
+                "configured"
+            } else {
+                "optional / missing"
+            }
         ),
-        format!("Git: {}", if git_available { "available" } else { "not found" }),
+        format!(
+            "Git: {}",
+            if git_available {
+                "available"
+            } else {
+                "not found"
+            }
+        ),
         format!(
             "Studio bridge: {} on 127.0.0.1:{}",
-            if context.bridge_available { "running" } else { "not running" },
+            if context.bridge_available {
+                "running"
+            } else {
+                "not running"
+            },
             context.studio_port
         ),
         format!(
             "Studio plugin: {}",
-            if context.studio_broker.is_connected() { "connected" } else { "not connected" }
+            if context.studio_broker.is_connected() {
+                "connected"
+            } else {
+                "not connected"
+            }
         ),
     ];
 
     #[cfg(windows)]
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
         let base = PathBuf::from(local_app_data).join("Roblox").join("Plugins");
-        for name in ["RoldexStudio.plugin.lua", "RoldexStudioRuntime.plugin.lua"] {
-            let path = base.join(name);
+        for name in [
+            "RoldexStudio.plugin.lua",
+            "RoldexStudioRuntime.plugin.lua",
+        ] {
             lines.push(format!(
                 "{}: {}",
                 name,
-                if path.exists() { "installed" } else { "not found" }
+                if base.join(name).exists() {
+                    "installed"
+                } else {
+                    "not found"
+                }
             ));
         }
     }
@@ -434,16 +464,14 @@ fn help_text() -> &'static str {
 }
 
 fn compact_status(raw: &str) -> String {
-    let raw = raw.trim();
-    if raw.is_empty() {
+    let mut text = raw.trim().to_string();
+    if text.is_empty() {
         return "Working…".into();
     }
-    let mut text = raw.to_string();
-    if text.len() > 70 {
-        text.truncate(67);
+    if text.chars().count() > 72 {
+        text = text.chars().take(69).collect::<String>();
         text.push('…');
-    }
-    if !text.ends_with('…') && !text.ends_with('.') {
+    } else if !text.ends_with('…') && !text.ends_with('.') {
         text.push('…');
     }
     text
@@ -454,7 +482,9 @@ fn friendly_error(error: &str) -> String {
         return "AI key is missing. Set OPENROUTER_API_KEY in Windows, then restart Roldex.".into();
     }
     if error.to_ascii_lowercase().contains("timed out") {
-        return format!("The request timed out instead of hanging forever. You can retry; Roldex kept the session usable.\n\n{error}");
+        return format!(
+            "The request timed out instead of freezing the session. Retry when ready.\n\n{error}"
+        );
     }
     format!("Request failed: {error}")
 }
@@ -465,7 +495,6 @@ fn draw(
     context: &UiContext,
 ) -> Result<()> {
     terminal.draw(|frame| {
-        let area = frame.area();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -474,64 +503,90 @@ fn draw(
                 Constraint::Length(3),
                 Constraint::Length(1),
             ])
-            .split(area);
+            .split(frame.area());
 
         let studio = if context.studio_broker.is_connected() {
             Span::styled("Studio connected", Style::default().fg(Color::Green))
         } else {
             Span::styled("Studio offline", Style::default().fg(Color::DarkGray))
         };
-        let header = Line::from(vec![
-            Span::styled(
-                "roldex",
-                Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                context.project.kind.to_string(),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::raw("  •  "),
-            Span::styled(
-                context.config.permissions.mode.to_string(),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::raw("  •  "),
-            studio,
-        ]);
-        frame.render_widget(Paragraph::new(header), chunks[0]);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "roldex",
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    context.project.kind.to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::raw("  •  "),
+                studio,
+            ])),
+            chunks[0],
+        );
 
         let body_lines = render_log(&state.log);
-        let body_height = chunks[1].height.saturating_sub(1) as usize;
-        let estimated = body_lines.len();
-        let scroll = estimated.saturating_sub(body_height) as u16;
-        let body = Paragraph::new(body_lines)
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0));
-        frame.render_widget(body, chunks[1]);
+        let visible_height = chunks[1].height.saturating_sub(1) as usize;
+        let scroll = body_lines.len().saturating_sub(visible_height) as u16;
+        frame.render_widget(
+            Paragraph::new(body_lines)
+                .wrap(Wrap { trim: false })
+                .scroll((scroll, 0)),
+            chunks[1],
+        );
 
-        let (input_title, input_text, border_style) = if state.busy {
+        let (title, input_line, border_color) = if state.busy {
             let spinner = ["·", "•", "●", "•"][state.spinner_tick % 4];
             (
                 format!(" {spinner} {} ", state.status),
-                "Esc to stop the active task".to_string(),
-                Style::default().fg(Color::Magenta),
+                Line::from(Span::styled(
+                    "Esc to stop the active task",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Color::Magenta,
             )
         } else {
-            let shown = if state.input.is_empty() {
+            let span = if state.input.is_empty() {
                 Span::styled(INPUT_PLACEHOLDER, Style::default().fg(Color::DarkGray))
             } else {
-                Span::raw(format!("{}▏", visible_input_tail(&state.input, chunks[2].width)))
+                Span::raw(format!(
+                    "{}▏",
+                    visible_input_tail(&state.input, chunks[2].width)
+                ))
             };
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Send a message ");
-            frame.render_widget(Paragraph::new(Line::from(shown)).block(block), chunks[2]);
-            let footer = Line::from(vec![
+            (
+                " Send a message ".to_string(),
+                Line::from(span),
+                Color::DarkGray,
+            )
+        };
+        frame.render_widget(
+            Paragraph::new(input_line).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(border_color))
+                    .title(title),
+            ),
+            chunks[2],
+        );
+
+        let footer = if state.busy {
+            let elapsed = state.started_at.map_or(0, |started| started.elapsed().as_secs());
+            Line::from(vec![
+                Span::styled("esc", Style::default().fg(Color::Magenta)),
+                Span::raw(" stop  •  "),
+                Span::styled(
+                    format!("{}  •  {}s", state.status, elapsed),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])
+        } else {
+            Line::from(vec![
                 Span::styled("enter", Style::default().fg(Color::DarkGray)),
                 Span::raw(" send  •  "),
                 Span::styled("esc", Style::default().fg(Color::DarkGray)),
@@ -539,31 +594,8 @@ fn draw(
                 Span::styled("ctrl+c", Style::default().fg(Color::DarkGray)),
                 Span::raw(" exit  •  "),
                 Span::styled("/help", Style::default().fg(Color::DarkGray)),
-            ]);
-            frame.render_widget(Paragraph::new(footer), chunks[3]);
-            return;
+            ])
         };
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(border_style)
-            .title(input_title);
-        frame.render_widget(
-            Paragraph::new(Span::styled(input_text, Style::default().fg(Color::DarkGray)))
-                .block(block),
-            chunks[2],
-        );
-        let elapsed = state
-            .started_at
-            .map(|started| format!("  •  {}s", started.elapsed().as_secs()))
-            .unwrap_or_default();
-        let footer = Line::from(vec![
-            Span::styled("esc", Style::default().fg(Color::Magenta)),
-            Span::raw(" stop  •  "),
-            Span::styled(&state.status, Style::default().fg(Color::DarkGray)),
-            Span::styled(elapsed, Style::default().fg(Color::DarkGray)),
-        ]);
         frame.render_widget(Paragraph::new(footer), chunks[3]);
     })?;
     Ok(())
@@ -575,12 +607,10 @@ fn render_log(log: &[LogEntry]) -> Vec<Line<'static>> {
         if !lines.is_empty() {
             lines.push(Line::raw(""));
         }
-        let (label, label_style) = match entry.kind {
+        let (label, style) = match entry.kind {
             LogKind::User => (
                 "you",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             ),
             LogKind::Assistant => (
                 "roldex",
@@ -595,45 +625,37 @@ fn render_log(log: &[LogEntry]) -> Vec<Line<'static>> {
             ),
         };
         if !label.is_empty() {
-            lines.push(Line::from(Span::styled(label.to_string(), label_style)));
+            lines.push(Line::from(Span::styled(label.to_string(), style)));
         }
         for raw in entry.text.lines() {
-            let style = match entry.kind {
+            let line_style = match entry.kind {
                 LogKind::System => Style::default().fg(Color::DarkGray),
                 LogKind::Error => Style::default().fg(Color::Red),
                 _ if raw.trim_start().starts_with('✓') => Style::default().fg(Color::Green),
                 _ if raw.trim_start().starts_with('•') => Style::default().fg(Color::Cyan),
-                _ if raw.trim_start().starts_with("```") => Style::default().fg(Color::DarkGray),
+                _ if raw.trim_start().starts_with("```") => {
+                    Style::default().fg(Color::DarkGray)
+                }
                 _ => Style::default(),
             };
-            lines.push(Line::from(Span::styled(raw.to_string(), style)));
+            lines.push(Line::from(Span::styled(raw.to_string(), line_style)));
         }
     }
     lines
 }
 
 fn visible_input_tail(input: &str, area_width: u16) -> String {
-    let max = area_width.saturating_sub(4) as usize;
-    if input.chars().count() <= max {
+    let max_chars = area_width.saturating_sub(5) as usize;
+    if input.chars().count() <= max_chars {
         return input.to_string();
     }
-    input
+    let tail = input
         .chars()
         .rev()
-        .take(max.saturating_sub(1))
+        .take(max_chars.saturating_sub(1))
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
-        .collect::<String>()
-        .prepend_ellipsis()
-}
-
-trait PrependEllipsis {
-    fn prepend_ellipsis(self) -> String;
-}
-
-impl PrependEllipsis for String {
-    fn prepend_ellipsis(self) -> String {
-        format!("…{self}")
-    }
+        .collect::<String>();
+    format!("…{tail}")
 }

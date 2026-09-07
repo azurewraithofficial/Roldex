@@ -3,6 +3,7 @@ assert(plugin, "Roldex Studio Runtime must run as a Roblox Studio plugin")
 local HttpService = game:GetService("HttpService")
 local StudioCaptureService = game:GetService("StudioCaptureService")
 local StudioTestService = game:GetService("StudioTestService")
+local StudioDeviceSimulatorService = game:GetService("StudioDeviceSimulatorService")
 local UserInputService = game:GetService("UserInputService")
 local EncodingService = game:GetService("EncodingService")
 local LogService = game:GetService("LogService")
@@ -76,7 +77,7 @@ local function captureScreenshot(payload)
 
 	local png = capture:GetBuffer()
 	return {
-		png_base64 = encodeBufferToBase64(png),
+		data_base64 = encodeBufferToBase64(png),
 		width = capture.Resolution.X,
 		height = capture.Resolution.Y,
 		include_ui = includeUi,
@@ -254,6 +255,70 @@ local function runInput(payload)
 	return { steps_completed = math.min(#(payload.steps or {}), MAX_STEPS), captures = captures }
 end
 
+local function deviceStatus()
+	local device = StudioDeviceSimulatorService:GetDeviceAsync()
+	local result = { device_id = device }
+	if device ~= "default" then
+		result.resolution = tostring(StudioDeviceSimulatorService:GetResolutionAsync())
+		result.orientation = tostring(StudioDeviceSimulatorService:GetOrientationAsync())
+		result.pixel_density = StudioDeviceSimulatorService:GetPixelDensityAsync()
+		result.scaling_mode = tostring(StudioDeviceSimulatorService:GetScalingModeAsync())
+	end
+	return result
+end
+
+local function runDevice(payload)
+	local operation = tostring(payload.operation or "status")
+	if operation == "status" then
+		return deviceStatus()
+	elseif operation == "list" then
+		local ids = StudioDeviceSimulatorService:GetDeviceListAsync()
+		local devices = {}
+		for _, id in ipairs(ids) do
+			local ok, info = pcall(function()
+				return StudioDeviceSimulatorService:GetDeviceInfoAsync(id)
+			end)
+			table.insert(devices, ok and info or { DeviceId = id })
+		end
+		return { devices = devices }
+	elseif operation == "set_device" then
+		assert(type(payload.device_id) == "string" and payload.device_id ~= "", "set_device requires device_id")
+		StudioDeviceSimulatorService:SetDeviceAsync(payload.device_id)
+		return deviceStatus()
+	elseif operation == "set_resolution" then
+		StudioDeviceSimulatorService:SetResolutionAsync(
+			math.clamp(tonumber(payload.width) or 1280, 1, 7680),
+			math.clamp(tonumber(payload.height) or 720, 1, 4320)
+		)
+		return deviceStatus()
+	elseif operation == "set_orientation" then
+		local orientation = tostring(payload.orientation or "landscape")
+		local value = if orientation == "portrait"
+			then Enum.ScreenOrientation.Portrait
+			elseif orientation == "landscape_right"
+			then Enum.ScreenOrientation.LandscapeRight
+			else Enum.ScreenOrientation.LandscapeLeft
+		StudioDeviceSimulatorService:SetOrientationAsync(value)
+		return deviceStatus()
+	elseif operation == "set_dpi" then
+		StudioDeviceSimulatorService:SetPixelDensityAsync(math.clamp(tonumber(payload.dpi) or 160, 72, 10000))
+		return deviceStatus()
+	elseif operation == "set_scaling" then
+		local mode = tostring(payload.scaling_mode or "fit")
+		local value = if mode == "actual"
+			then Enum.DeviceSimulatorScalingMode.ActualResolution
+			elseif mode == "physical"
+			then Enum.DeviceSimulatorScalingMode.ScaleToPhysicalSize
+			else Enum.DeviceSimulatorScalingMode.FitToWindow
+		StudioDeviceSimulatorService:SetScalingModeAsync(value)
+		return deviceStatus()
+	elseif operation == "stop" then
+		StudioDeviceSimulatorService:StopSimulationAsync()
+		return deviceStatus()
+	end
+	error("unsupported device operation " .. operation)
+end
+
 local function reflectApi(payload)
 	local className = tostring(payload.class_name or "")
 	assert(className ~= "", "reflect requires class_name")
@@ -294,6 +359,8 @@ local function executeCommand(command)
 			return runScenarioTest(command.payload or {})
 		elseif command.action == "input" then
 			return runInput(command.payload or {})
+		elseif command.action == "device" then
+			return runDevice(command.payload or {})
 		elseif command.action == "reflect" then
 			return reflectApi(command.payload or {})
 		end

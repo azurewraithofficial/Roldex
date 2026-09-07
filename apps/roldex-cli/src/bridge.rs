@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_DEFAULT_BODY_BYTES: usize = 384 * 1024;
-const MAX_ACTION_RESULT_BODY_BYTES: usize = 6 * 1024 * 1024;
+const MAX_ACTION_RESULT_BODY_BYTES: usize = 12 * 1024 * 1024;
 const MAX_MESSAGE_CHARS: usize = 16_000;
 const MAX_SCRIPT_CHARS: usize = 80_000;
 const MAX_SELECTION_ITEMS: usize = 24;
@@ -120,6 +120,16 @@ async fn handle_connection(
             )
             .await
         }
+        ("GET", "/v1/runtime-actions") => {
+            let commands = broker.poll_runtime(4).await;
+            write_json(
+                &mut stream,
+                200,
+                "OK",
+                &json!({ "ok": true, "commands": commands }),
+            )
+            .await
+        }
         ("POST", "/v1/actions/result") => {
             let result: StudioCommandResult = serde_json::from_slice(&request.body)
                 .context("Studio bridge received invalid action result JSON")?;
@@ -171,7 +181,7 @@ fn build_studio_prompt(payload: StudioChatRequest) -> Result<String> {
 
     let mut prompt = truncate_chars(message, MAX_MESSAGE_CHARS);
     prompt.push_str("\n\n[Live Roblox Studio context]\n");
-    prompt.push_str("The Studio plugin is connected. For requested Studio edits, use Studio tools directly rather than merely describing how to do them. Prefer visible, incremental Instance creation and verify important changes after editing. For visual work, capture and analyze the resulting viewport rather than guessing how it looks.\n");
+    prompt.push_str("The Studio plugins are connected. For requested Studio edits, use Studio tools directly rather than merely describing how to do them. Prefer visible, incremental Instance creation and verify important changes after editing. For visual work, capture and analyze the resulting viewport rather than guessing how it looks. Use device simulation and scenario tests when player-facing behavior needs validation.\n");
 
     if payload.selection.is_empty() {
         prompt.push_str("Selection: none\n");

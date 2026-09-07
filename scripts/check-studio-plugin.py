@@ -60,6 +60,13 @@ runtime_required = (
     "StudioTestService:ExecuteRunModeAsync",
     "StudioTestService:ExecutePlayModeAsync",
     "StudioTestService:ExecuteMultiplayerTestAsync",
+    "StudioTestService:GetTestArgs()",
+    "ScriptEditorService:UpdateSourceAsync",
+    "StarterPlayerScripts",
+    "__roldex_chat_messages",
+    'kind == "chat"',
+    "channel:SendAsync",
+    "[RoldexChatTest][SENT]",
     "ReflectionService:GetPropertiesOfClass",
     'Url = bridgeUrl() .. "/v1/runtime-actions"',
     'Url = bridgeUrl() .. "/v1/actions/result"',
@@ -87,6 +94,9 @@ if "while true do" not in main or "pollCommands()" not in main:
     errors.append("main Studio plugin must continuously poll the live-build queue")
 if "while true do" not in runtime or "pcall(poll)" not in runtime:
     errors.append("runtime Studio plugin must continuously poll the automation queue")
+
+if "chatHarness:Destroy()" not in runtime:
+    errors.append("runtime Studio plugin must clean up the temporary chat-test harness")
 
 if errors:
     print("Roldex Studio static checks failed:", file=sys.stderr)

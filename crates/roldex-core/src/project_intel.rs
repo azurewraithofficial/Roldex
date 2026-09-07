@@ -139,7 +139,8 @@ fn inspect_file(root: &Path, path: &Path, report: &mut ProjectInventory) {
         report.shared_scripts += 1;
     }
 
-    if lower.contains("module") || lower.ends_with(".module.lua") || lower.ends_with(".module.luau") {
+    if lower.contains("module") || lower.ends_with(".module.lua") || lower.ends_with(".module.luau")
+    {
         report.module_scripts += 1;
     }
 
@@ -155,11 +156,21 @@ fn inspect_file(root: &Path, path: &Path, report: &mut ProjectInventory) {
 
     report.remotes_mentions += count_any(
         &source,
-        &["RemoteEvent", "RemoteFunction", "OnServerEvent", "OnClientEvent"],
+        &[
+            "RemoteEvent",
+            "RemoteFunction",
+            "OnServerEvent",
+            "OnClientEvent",
+        ],
     );
     report.datastore_mentions += count_any(
         &source,
-        &["DataStoreService", "GetDataStore", "UpdateAsync", "SetAsync"],
+        &[
+            "DataStoreService",
+            "GetDataStore",
+            "UpdateAsync",
+            "SetAsync",
+        ],
     );
     collect_services(&source, &mut report.services);
 }
@@ -170,7 +181,11 @@ fn collect_services(source: &str, services: &mut BTreeMap<String, usize>) {
     while let Some(position) = remaining.find(marker) {
         remaining = &remaining[position + marker.len()..];
         let trimmed = remaining.trim_start();
-        let Some(quote) = trimmed.chars().next().filter(|value| *value == '\'' || *value == '"') else {
+        let Some(quote) = trimmed
+            .chars()
+            .next()
+            .filter(|value| *value == '\'' || *value == '"')
+        else {
             continue;
         };
         let rest = &trimmed[quote.len_utf8()..];
@@ -178,7 +193,8 @@ fn collect_services(source: &str, services: &mut BTreeMap<String, usize>) {
             continue;
         };
         let name = &rest[..end];
-        if !name.is_empty() && name.len() <= 80 && name.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        if !name.is_empty() && name.len() <= 80 && name.chars().all(|ch| ch.is_ascii_alphanumeric())
+        {
             *services.entry(name.to_owned()).or_insert(0) += 1;
         }
         remaining = &rest[end + quote.len_utf8()..];

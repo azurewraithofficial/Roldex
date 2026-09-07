@@ -10,7 +10,8 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
-const MAX_BODY_BYTES: usize = 384 * 1024;
+const MAX_DEFAULT_BODY_BYTES: usize = 384 * 1024;
+const MAX_ACTION_RESULT_BODY_BYTES: usize = 6 * 1024 * 1024;
 const MAX_MESSAGE_CHARS: usize = 16_000;
 const MAX_SCRIPT_CHARS: usize = 80_000;
 const MAX_SELECTION_ITEMS: usize = 24;
@@ -170,7 +171,7 @@ fn build_studio_prompt(payload: StudioChatRequest) -> Result<String> {
 
     let mut prompt = truncate_chars(message, MAX_MESSAGE_CHARS);
     prompt.push_str("\n\n[Live Roblox Studio context]\n");
-    prompt.push_str("The Studio plugin is connected. For requested Studio edits, use Studio tools directly rather than merely describing how to do them. Prefer visible, incremental Instance creation and verify important changes after editing.\n");
+    prompt.push_str("The Studio plugin is connected. For requested Studio edits, use Studio tools directly rather than merely describing how to do them. Prefer visible, incremental Instance creation and verify important changes after editing. For visual work, capture and analyze the resulting viewport rather than guessing how it looks.\n");
 
     if payload.selection.is_empty() {
         prompt.push_str("Selection: none\n");
@@ -276,8 +277,13 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest> {
         }
     }
 
-    if content_length > MAX_BODY_BYTES {
-        bail!("Studio bridge request body exceeds {MAX_BODY_BYTES} bytes");
+    let body_limit = if path == "/v1/actions/result" {
+        MAX_ACTION_RESULT_BODY_BYTES
+    } else {
+        MAX_DEFAULT_BODY_BYTES
+    };
+    if content_length > body_limit {
+        bail!("Studio bridge request body exceeds {body_limit} bytes for {path}");
     }
 
     let body_start = header_end + 4;

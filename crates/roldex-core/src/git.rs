@@ -23,6 +23,7 @@ pub fn git_diff(root: &Path, path: Option<&str>, staged: bool) -> Result<String>
 
     match path {
         Some(path) => {
+            args.insert(0, "--literal-pathspecs");
             args.push("--");
             args.push(path);
             run_git(root, &args)
@@ -36,6 +37,52 @@ pub fn git_diff(root: &Path, path: Option<&str>, staged: bool) -> Result<String>
                 Ok(summary)
             }
         }
+    }
+}
+
+pub fn git_unstage_file(root: &Path, path: &str) -> Result<String> {
+    run_git(
+        root,
+        &[
+            "--literal-pathspecs",
+            "restore",
+            "--staged",
+            "--",
+            path,
+        ],
+    )?;
+    git_path_status(root, path)
+}
+
+pub fn git_restore_worktree_file(root: &Path, path: &str) -> Result<String> {
+    run_git(
+        root,
+        &[
+            "--literal-pathspecs",
+            "restore",
+            "--worktree",
+            "--",
+            path,
+        ],
+    )?;
+    git_path_status(root, path)
+}
+
+fn git_path_status(root: &Path, path: &str) -> Result<String> {
+    let status = run_git(
+        root,
+        &[
+            "--literal-pathspecs",
+            "status",
+            "--short",
+            "--",
+            path,
+        ],
+    )?;
+    if status.trim().is_empty() {
+        Ok(format!("{path}: clean"))
+    } else {
+        Ok(status)
     }
 }
 

@@ -10,10 +10,11 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
-const MAX_BODY_BYTES: usize = 256 * 1024;
+const MAX_BODY_BYTES: usize = 384 * 1024;
 const MAX_MESSAGE_CHARS: usize = 16_000;
 const MAX_SCRIPT_CHARS: usize = 80_000;
 const MAX_SELECTION_ITEMS: usize = 24;
+const MAX_SELECTION_DETAILS_CHARS: usize = 3_000;
 
 #[derive(Debug, Deserialize)]
 struct StudioChatRequest {
@@ -28,6 +29,8 @@ struct StudioSelection {
     name: String,
     class_name: String,
     full_name: String,
+    #[serde(default)]
+    details: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,6 +150,16 @@ fn build_studio_prompt(payload: StudioChatRequest) -> Result<String> {
                 truncate_chars(&item.class_name, 120),
                 truncate_chars(&item.full_name, 600)
             ));
+            if let Some(details) = item
+                .details
+                .as_deref()
+                .map(str::trim)
+                .filter(|details| !details.is_empty())
+            {
+                prompt.push_str("  Details: ");
+                prompt.push_str(&truncate_chars(details, MAX_SELECTION_DETAILS_CHARS));
+                prompt.push('\n');
+            }
         }
         if payload.selection.len() > MAX_SELECTION_ITEMS {
             prompt.push_str("- … additional selected instances omitted\n");

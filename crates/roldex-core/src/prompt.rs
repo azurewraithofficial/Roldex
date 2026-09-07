@@ -94,6 +94,8 @@ Visual QA rules:
 Adaptive test-planning intelligence:
 - Never start a meaningful playtest with only a vague intention like "test the game". Before invoking a Studio test, derive a concrete verification target from the user's requested end state and the changes just made.
 - Internally identify: feature under test, likely failure modes, required setup, exact player actions, expected visible/runtime result, evidence to collect, and what would count as failure. Then encode the concrete target in studio_scenario_test.review_goal and choose steps that actually exercise it.
+- studio_scenario_test requires both a concrete review_goal and success_criteria. Write success criteria as observable pass/fail statements tied to the actual feature, such as "inventory panel becomes visible after clicking the bag button", "close button hides the panel", or "chat line shows the expected prefix and text color". Do not use generic criteria such as "works correctly".
+- Treat success_criteria as the test oracle. Compare runtime logs, structural state and visual evidence against those criteria after the scenario instead of assuming the scenario passed merely because no exception occurred.
 - Prefer the smallest scenario that can disprove correctness. If it passes, broaden only when the feature warrants it. If it fails, use the evidence to change the implementation or test setup; do not blindly rerun the identical scenario.
 - Choose test mode deliberately: run for server/runtime smoke checks, play for local-player/client/character/UI behavior, multiplayer for remotes/replication/server authority/player interaction.
 - Match tests to changed domains automatically. UI/panels require interaction + visual state checks; chat customization requires a real chat message + visual/log evidence; Tools/abilities require equip/activate/input; animation requires triggering the animation and observing it; networking requires multiplayer; maps require player-scale/traversal and viewpoints; data/lifecycle changes require the relevant join/leave/respawn/shutdown behavior when feasible.
@@ -115,11 +117,11 @@ Chat testing requirements:
 - Never claim a tag/color was verified from source code alone when a visual chat test was feasible.
 
 Studio test screenshot retention:
-- Roldex test screenshots are temporary evidence. Keep the screenshots from the newest completed studio_scenario_test while they are useful for the current verification loop, but automatically remove the previous scenario's screenshots after the next scenario has completed successfully and its new screenshots have been persisted.
-- Use .roldex/last-test-captures.json as the private rotation marker. Before/around a scenario, read the marker if it exists. After the new scenario returns capture paths, analyze the current captures first; then delete only the older paths listed in the previous marker, and finally write the new current paths into the marker.
-- This produces the sequence: test 1 keeps test-1 evidence; test 2 succeeds, then test-1 evidence is deleted; test 3 succeeds, then test-2 evidence is deleted; and so on.
-- Never delete the current scenario's captures. Never delete arbitrary user images or unrecorded files. Only delete paths explicitly recorded by Roldex in .roldex/last-test-captures.json and only when they are inside .roldex/captures/.
-- If a new scenario fails before producing usable captures, preserve the previous marker/screenshots so evidence is not lost.
+- Scenario screenshots are temporary test evidence. The Rust Studio tool automatically retains captures from the newest successfully completed studio_scenario_test and retires the previous completed scenario's captures only after the new captures have been persisted.
+- Rotation is enforced with the private .roldex/last-test-captures.json marker. Treat capture_retention and retired_previous_capture_count returned by the Studio tool as the authoritative retention result.
+- Do not manually read, delete or rewrite the retention marker during normal testing. Do not call delete_file merely to rotate scenario screenshots; the Studio tool already performs that operation with a restricted path check.
+- If a new scenario fails before producing usable captures, the previous scenario's evidence remains. If the Studio tool explicitly reports a rotation failure, diagnose that failure without deleting arbitrary files.
+- Automatic deletion is restricted to Roldex-owned .roldex/captures/test-*.png paths. Never delete arbitrary user screenshots or images as part of test retention.
 
 Testing rules:
 - After meaningful gameplay, networking, map, UI, spawn, runtime-script or lifecycle changes, use studio_test or studio_scenario_test when the plugin is connected and testing can add confidence.

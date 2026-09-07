@@ -9,8 +9,10 @@ $Repo = "azurewraithofficial/Roldex"
 $InstallDir = Join-Path $env:LOCALAPPDATA "Roldex\bin"
 $BinaryPath = Join-Path $InstallDir "roldex.exe"
 $PluginDir = Join-Path $env:LOCALAPPDATA "Roblox\Plugins"
-$PluginPath = Join-Path $PluginDir "RoldexStudio.plugin.lua"
-$PluginUrl = "https://raw.githubusercontent.com/$Repo/main/plugins/roldex-studio/RoldexStudio.plugin.lua"
+$MainPluginPath = Join-Path $PluginDir "RoldexStudio.plugin.lua"
+$RuntimePluginPath = Join-Path $PluginDir "RoldexStudioRuntime.plugin.lua"
+$MainPluginUrl = "https://raw.githubusercontent.com/$Repo/main/plugins/roldex-studio/RoldexStudio.plugin.lua"
+$RuntimePluginUrl = "https://raw.githubusercontent.com/$Repo/main/plugins/roldex-studio/RoldexStudioRuntime.plugin.lua"
 
 function Get-RoldexArchitecture {
     $arch = $env:PROCESSOR_ARCHITEW6432
@@ -49,21 +51,38 @@ function Get-RemoteFile([string]$Uri, [string]$OutFile) {
         -Headers @{ "User-Agent" = "Roldex-Installer" }
 }
 
-function Install-StudioPlugin {
-    New-Item -ItemType Directory -Force -Path $PluginDir | Out-Null
-    $temporary = "$PluginPath.download"
+function Install-OneStudioPlugin(
+    [string]$Url,
+    [string]$Path,
+    [string[]]$RequiredMarkers
+) {
+    $temporary = "$Path.download"
     Remove-Item $temporary -Force -ErrorAction SilentlyContinue
-    Get-RemoteFile $PluginUrl $temporary
+    Get-RemoteFile $Url $temporary
 
     $pluginText = Get-Content -Raw -Path $temporary
-    if ($pluginText -notmatch "Roldex Studio" -or $pluginText -notmatch "X-Roldex-Bridge") {
-        Remove-Item $temporary -Force -ErrorAction SilentlyContinue
-        throw "Downloaded Studio plugin did not pass the Roldex validation check."
+    foreach ($marker in $RequiredMarkers) {
+        if ($pluginText -notmatch [regex]::Escape($marker)) {
+            Remove-Item $temporary -Force -ErrorAction SilentlyContinue
+            throw "Downloaded Studio plugin $([IO.Path]::GetFileName($Path)) failed validation: missing $marker"
+        }
     }
 
-    Move-Item -Force $temporary $PluginPath
-    Write-Host "Installed Roldex Studio plugin: $PluginPath"
-    Write-Host "Restart Roblox Studio if it is currently open."
+    Move-Item -Force $temporary $Path
+    Write-Host "Installed Studio plugin: $Path"
+}
+
+function Install-StudioPlugins {
+    New-Item -ItemType Directory -Force -Path $PluginDir | Out-Null
+    Install-OneStudioPlugin `
+        $MainPluginUrl `
+        $MainPluginPath `
+        @("Roldex Studio", "X-Roldex-Bridge", "/v1/actions", "ChangeHistoryService")
+    Install-OneStudioPlugin `
+        $RuntimePluginUrl `
+        $RuntimePluginPath `
+        @("Roldex Studio Runtime", "X-Roldex-Bridge", "/v1/runtime-actions", "StudioCaptureService", "CreateVirtualInput")
+    Write-Host "Restart Roblox Studio if it is currently open so both Roldex plugins reload."
 }
 
 function Install-ReleaseBinary {
@@ -152,12 +171,13 @@ if (-not $installedBinary) {
 }
 
 if (-not $SkipPlugin) {
-    Install-StudioPlugin
+    Install-StudioPlugins
 }
 
 Write-Host ""
 Write-Host "Roldex installation complete."
 Write-Host "Set OPENROUTER_API_KEY, open your Roblox/Rojo project folder, then run: roldex"
+Write-Host "For tasks that truly require files outside the project, run: roldex --full-access"
 Write-Host "Optional media generation uses POLLINATIONS_API_KEY."
 Write-Host "Run /doctor inside Roldex to check your setup."
-Write-Host "The Studio plugin connects to http://127.0.0.1:38247 by default."
+Write-Host "Both Studio plugins connect only to http://127.0.0.1:38247 by default."

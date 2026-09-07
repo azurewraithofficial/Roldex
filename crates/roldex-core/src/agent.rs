@@ -418,7 +418,10 @@ fn verification_satisfies(tool_name: &str, scope: VerificationScope, output: &st
         VerificationScope::Studio => match tool_name {
             "studio_query" => true,
             "studio_test" => output.contains("\"error_count\":0"),
-            "analyze_image" => output.contains(".roldex/captures/studio-"),
+            "analyze_image" => {
+                output.contains(".roldex/captures/studio-")
+                    || output.contains(".roldex/captures/test-")
+            }
             _ => false,
         },
     }
@@ -490,6 +493,11 @@ mod tests {
             "analyze_image",
             VerificationScope::Studio,
             "{\"ok\":true,\"path\":\".roldex/captures/studio-1.png\"}"
+        ));
+        assert!(verification_satisfies(
+            "analyze_image",
+            VerificationScope::Studio,
+            "{\"ok\":true,\"path\":\".roldex/captures/test-1-0.png\"}"
         ));
         assert!(!verification_satisfies(
             "file_info",

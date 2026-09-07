@@ -41,10 +41,6 @@ impl ChatMessage {
         Self::text("user", content)
     }
 
-    pub fn user_with_image(text: impl Into<String>, data_url: impl Into<String>) -> Self {
-        Self::user_with_images(text, vec![data_url.into()])
-    }
-
     pub fn user_with_images(text: impl Into<String>, data_urls: Vec<String>) -> Self {
         let mut parts = Vec::with_capacity(data_urls.len() + 1);
         parts.push(json!({

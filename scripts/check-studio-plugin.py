@@ -8,7 +8,6 @@ errors: list[str] = []
 
 for forbidden in (
     "sendButton.Enabled",
-    "applyButton.Enabled",
     "healthButton.Enabled",
 ):
     if forbidden in text:
@@ -18,22 +17,36 @@ required = (
     'local DEFAULT_BRIDGE_URL = "http://127.0.0.1:38247"',
     'options.Headers["X-Roldex-Bridge"] = "studio"',
     "ScriptEditorService:GetEditorSource(active)",
-    "ScriptEditorService:UpdateSourceAsync(active",
-    "ScriptEditorService:UpdateSourceAsync(script",
+    "ScriptEditorService:UpdateSourceAsync(scriptObject",
     "ChangeHistoryService:TryBeginRecording",
     "ChangeHistoryService:FinishRecording",
+    "StudioCaptureService:CanCaptureScreenshot",
+    "StudioCaptureService:RequestScreenshotPermissionAsync",
+    "StudioCaptureService:CaptureScreenshot",
+    "EncodingService:Base64Encode",
+    "StudioDeviceSimulatorService:GetDeviceListAsync",
+    "StudioDeviceSimulatorService:SetDeviceAsync",
+    "StudioDeviceSimulatorService:SetResolutionAsync",
+    "StudioDeviceSimulatorService:SetOrientationAsync",
+    "UserInputService:CreateVirtualInput",
     "StudioTestService:ExecuteRunModeAsync",
     "StudioTestService:ExecutePlayModeAsync",
     "StudioTestService:ExecuteMultiplayerTestAsync",
     'Url = bridgeUrl() .. "/v1/actions"',
     'Url = bridgeUrl() .. "/v1/actions/result"',
     "local function executeMutationAction",
+    "local function executeBatch",
+    "local function captureStudioView",
+    "local function executeDevice",
+    "local function runStudioTest",
     'op == "create"',
     'op == "set_properties"',
     'op == "update_script"',
     'op == "terrain_fill_block"',
+    'command.action == "capture"',
+    'command.action == "device"',
+    'command.action == "test"',
     "sendButton.Activated:Connect",
-    "applyButton.Activated:Connect",
 )
 
 for marker in required:
@@ -51,6 +64,12 @@ if 'value:match("^http://127%.0%.0%.1:%d+$")' not in text:
 
 if "while true do" not in text or "pollCommands()" not in text:
     errors.append("Studio plugin must continuously poll the local Roldex action queue")
+
+if "Enum.StudioCaptureScreenshotFormat.PNG" not in text:
+    errors.append("Studio visual QA must request PNG screenshots for the CLI vision pipeline")
+
+if "Enum.FinishRecordingOperation.Commit" not in text:
+    errors.append("Studio mutation batches must commit to ChangeHistoryService undo history")
 
 if errors:
     print("Roldex Studio static checks failed:", file=sys.stderr)

@@ -166,8 +166,8 @@ impl WorkspaceFs {
     pub fn delete_file(&self, requested: impl AsRef<Path>) -> Result<()> {
         self.require_write()?;
         let path = self.resolve_user_read_path(requested)?;
-        let metadata = fs::metadata(&path)
-            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        let metadata =
+            fs::metadata(&path).with_context(|| format!("failed to inspect {}", path.display()))?;
         if !metadata.is_file() {
             bail!("{} is not a file", path.display());
         }
@@ -336,8 +336,13 @@ mod tests {
         fs::create_dir_all(&outside).expect("create outside");
         let target = outside.join("tool-config.txt");
         let workspace = WorkspaceFs::new(&root, PermissionMode::FullAccess).expect("workspace");
-        workspace.write_text(&target, "fixed").expect("absolute write");
-        assert_eq!(workspace.read_text(&target).expect("absolute read"), "fixed");
+        workspace
+            .write_text(&target, "fixed")
+            .expect("absolute write");
+        assert_eq!(
+            workspace.read_text(&target).expect("absolute read"),
+            "fixed"
+        );
         workspace.delete_file(&target).expect("absolute delete");
         assert!(!target.exists());
         fs::remove_dir_all(root).expect("cleanup root");

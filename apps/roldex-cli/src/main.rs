@@ -1,7 +1,10 @@
 mod bridge;
+mod intent;
 
+use std::env;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -46,9 +49,9 @@ async fn main() -> Result<()> {
 
     print_banner(&project, &config);
 
-    let _bridge_handle = if cli.no_studio_bridge {
+    let (_bridge_handle, bridge_available) = if cli.no_studio_bridge {
         println!("Studio bridge: disabled");
-        None
+        (None, false)
     } else {
         match bridge::start(cli.studio_port, Arc::clone(&agent), Arc::clone(&fs)).await {
             Ok(handle) => {
@@ -56,14 +59,14 @@ async fn main() -> Result<()> {
                     "Studio bridge: http://127.0.0.1:{} (Roldex Studio plugin ready)",
                     cli.studio_port
                 );
-                Some(handle)
+                (Some(handle), true)
             }
             Err(error) => {
                 eprintln!("Studio bridge unavailable: {error:#}");
                 eprintln!(
                     "The CLI will continue. Use --studio-port <port> or --no-studio-bridge if needed."
                 );
-                None
+                (None, false)
             }
         }
     };
@@ -97,6 +100,11 @@ async fn main() -> Result<()> {
             continue;
         }
 
+        if input == "/doctor" {
+            print_doctor(&project, &config, bridge_available, cli.studio_port);
+            continue;
+        }
+
         if input == "/tree" {
             println!("{}", project_tree(&root, 3, 120)?);
             continue;
@@ -120,12 +128,12 @@ async fn main() -> Result<()> {
             };
 
             if path.is_empty() {
-                eprintln!("usage: /image <workspace-path> :: <optional prompt>");
+                eprintln!("usage: /image <path> :: <optional prompt>");
                 continue;
             }
 
             if config.ui.show_progress {
-                println!("• Reading workspace image and sending vision context...");
+                println!("• Reading image and sending vision context...");
             }
 
             let show_progress = config.ui.show_progress;
@@ -147,20 +155,39 @@ async fn main() -> Result<()> {
             continue;
         }
 
+        let image_paths = intent::detect_image_paths(input, fs.as_ref());
         if config.ui.show_progress {
-            println!("• Working in Roblox/Luau context...");
+            if image_paths.is_empty() {
+                println!("• Working in Roblox/Luau context...");
+            } else {
+                println!(
+                    "• Attached {} image{} from your message...",
+                    image_paths.len(),
+                    if image_paths.len() == 1 { "" } else { "s" }
+                );
+            }
         }
 
         let show_progress = config.ui.show_progress;
         let result = {
             let mut agent = agent.lock().await;
-            agent
-                .chat_with_tools(input, fs.as_ref(), |event| {
-                    if show_progress {
-                        println!("• {event}");
-                    }
-                })
-                .await
+            if image_paths.is_empty() {
+                agent
+                    .chat_with_tools(input, fs.as_ref(), |event| {
+                        if show_progress {
+                            println!("• {event}");
+                        }
+                    })
+                    .await
+            } else {
+                agent
+                    .chat_with_images(input, &image_paths, fs.as_ref(), |event| {
+                        if show_progress {
+                            println!("• {event}");
+                        }
+                    })
+                    .await
+            }
         };
 
         match result {
@@ -179,11 +206,66 @@ fn print_banner(project: &ProjectSummary, config: &Config) {
     println!("Detected: {}", project.kind);
     println!("Model: {}", config.ai.model);
     println!("Permissions: {}", config.permissions.mode);
-    println!("Type /help for commands.");
+    println!("Just type what you want. /help shows optional shortcuts.");
+}
+
+fn print_doctor(project: &ProjectSummary, config: &Config, bridge_available: bool, port: u16) {
+    let ai_key = env::var_os(&config.ai.api_key_env).is_some();
+    let media_key = env::var_os("POLLINATIONS_API_KEY").is_some();
+    let git_available = Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+
+    println!("Roldex doctor");
+    println!("OS/arch: {}/{}", env::consts::OS, env::consts::ARCH);
+    println!("Project: {} ({})", project.root.display(), project.kind);
+    println!(
+        "AI key {}: {}",
+        config.ai.api_key_env,
+        if ai_key { "configured" } else { "missing" }
+    );
+    println!(
+        "Media key POLLINATIONS_API_KEY: {}",
+        if media_key {
+            "configured"
+        } else {
+            "optional / missing"
+        }
+    );
+    println!(
+        "Git: {}",
+        if git_available {
+            "available"
+        } else {
+            "not found"
+        }
+    );
+    println!(
+        "Studio bridge: {} on 127.0.0.1:{port}",
+        if bridge_available {
+            "running"
+        } else {
+            "not running"
+        }
+    );
+
+    #[cfg(windows)]
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
+        let plugin = PathBuf::from(local_app_data)
+            .join("Roblox")
+            .join("Plugins")
+            .join("RoldexStudio.plugin.lua");
+        println!(
+            "Studio plugin: {} ({})",
+            if plugin.exists() { "installed" } else { "not found" },
+            plugin.display()
+        );
+    }
 }
 
 fn print_help() {
     println!(
-        "Commands:\n  /help                         Show this help\n  /status                       Show project detection details\n  /tree                         Show project tree\n  /read <path>                  Read a UTF-8 workspace file\n  /image <path> :: <prompt>     Analyze a workspace PNG/JPEG/WebP/GIF\n  /quit                         Exit Roldex\n\nNormal chat can inspect, search, analyze, patch, create and delete workspace files, inspect Git, and accept live context from the Roldex Studio plugin."
+        "Roldex understands normal language by default. Examples:\n  fix my datastore system\n  check my remotes for security problems\n  look at \"screenshots/studio error.png\" and fix it\n  generate a square hand-drawn shop icon and save it under assets/ui\n  search current Roblox docs for MemoryStore sorted maps\n\nOptional shortcuts:\n  /help                         Show this help\n  /doctor                       Check local Roldex setup\n  /status                       Show project detection details\n  /tree                         Show project tree\n  /read <path>                  Read a UTF-8 workspace file\n  /image <path> :: <prompt>     Legacy explicit image-analysis shortcut\n  /quit                         Exit Roldex"
     );
 }

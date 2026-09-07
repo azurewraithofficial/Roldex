@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use roldex_core::{Agent, WorkspaceFs};
+use roldex_core::{Agent, StudioBroker, StudioCommandResult, WorkspaceFs};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -51,6 +51,7 @@ pub async fn start(
     port: u16,
     agent: Arc<Mutex<Agent>>,
     fs: Arc<WorkspaceFs>,
+    broker: StudioBroker,
 ) -> Result<JoinHandle<()>> {
     let listener = TcpListener::bind(("127.0.0.1", port))
         .await
@@ -63,8 +64,9 @@ pub async fn start(
             };
             let agent = Arc::clone(&agent);
             let fs = Arc::clone(&fs);
+            let broker = broker.clone();
             tokio::spawn(async move {
-                if let Err(error) = handle_connection(stream, agent, fs).await {
+                if let Err(error) = handle_connection(stream, agent, fs, broker).await {
                     eprintln!("Studio bridge request failed: {error:#}");
                 }
             });
@@ -76,6 +78,7 @@ async fn handle_connection(
     mut stream: TcpStream,
     agent: Arc<Mutex<Agent>>,
     fs: Arc<WorkspaceFs>,
+    broker: StudioBroker,
 ) -> Result<()> {
     let request = read_request(&mut stream).await?;
 
@@ -89,13 +92,42 @@ async fn handle_connection(
         .await;
     }
 
+    broker.mark_seen();
+
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => {
             write_json(
                 &mut stream,
                 200,
                 "OK",
-                &json!({ "ok": true, "service": "roldex-studio-bridge" }),
+                &json!({
+                    "ok": true,
+                    "service": "roldex-studio-bridge",
+                    "connected": broker.is_connected(),
+                    "pending_commands": broker.pending_count().await
+                }),
+            )
+            .await
+        }
+        ("GET", "/v1/actions") => {
+            let commands = broker.poll(8).await;
+            write_json(
+                &mut stream,
+                200,
+                "OK",
+                &json!({ "ok": true, "commands": commands }),
+            )
+            .await
+        }
+        ("POST", "/v1/actions/result") => {
+            let result: StudioCommandResult = serde_json::from_slice(&request.body)
+                .context("Studio bridge received invalid action result JSON")?;
+            let accepted = broker.complete(result).await;
+            write_json(
+                &mut stream,
+                200,
+                "OK",
+                &json!({ "ok": true, "accepted": accepted }),
             )
             .await
         }
@@ -138,6 +170,7 @@ fn build_studio_prompt(payload: StudioChatRequest) -> Result<String> {
 
     let mut prompt = truncate_chars(message, MAX_MESSAGE_CHARS);
     prompt.push_str("\n\n[Live Roblox Studio context]\n");
+    prompt.push_str("The Studio plugin is connected. For requested Studio edits, use Studio tools directly rather than merely describing how to do them. Prefer visible, incremental Instance creation and verify important changes after editing.\n");
 
     if payload.selection.is_empty() {
         prompt.push_str("Selection: none\n");
@@ -219,6 +252,9 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest> {
     let path = request_parts
         .next()
         .context("missing HTTP path")?
+        .split('?')
+        .next()
+        .unwrap_or_default()
         .to_owned();
 
     let mut content_length = 0usize;
@@ -321,5 +357,18 @@ mod tests {
     #[test]
     fn truncation_is_unicode_safe() {
         assert_eq!(truncate_chars("a🧱b", 2), "a🧱…");
+    }
+
+    #[test]
+    fn strips_query_string_from_path() {
+        let line = "GET /v1/actions?max=8 HTTP/1.1";
+        let path = line
+            .split_whitespace()
+            .nth(1)
+            .expect("path")
+            .split('?')
+            .next()
+            .expect("base");
+        assert_eq!(path, "/v1/actions");
     }
 }

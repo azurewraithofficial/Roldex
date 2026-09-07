@@ -43,13 +43,7 @@ pub fn git_diff(root: &Path, path: Option<&str>, staged: bool) -> Result<String>
 pub fn git_unstage_file(root: &Path, path: &str) -> Result<String> {
     run_git(
         root,
-        &[
-            "--literal-pathspecs",
-            "restore",
-            "--staged",
-            "--",
-            path,
-        ],
+        &["--literal-pathspecs", "restore", "--staged", "--", path],
     )?;
     git_path_status(root, path)
 }
@@ -71,13 +65,7 @@ pub fn git_restore_worktree_file(root: &Path, path: &str) -> Result<String> {
 fn git_path_status(root: &Path, path: &str) -> Result<String> {
     let status = run_git(
         root,
-        &[
-            "--literal-pathspecs",
-            "status",
-            "--short",
-            "--",
-            path,
-        ],
+        &["--literal-pathspecs", "status", "--short", "--", path],
     )?;
     if status.trim().is_empty() {
         Ok(format!("{path}: clean"))
@@ -151,7 +139,10 @@ mod tests {
         let root = test_dir(label);
         fs::create_dir_all(&root).expect("create repo");
         test_git(&root, &["init", "--quiet"]);
-        test_git(&root, &["config", "user.email", "roldex-tests@example.invalid"]);
+        test_git(
+            &root,
+            &["config", "user.email", "roldex-tests@example.invalid"],
+        );
         test_git(&root, &["config", "user.name", "Roldex Tests"]);
         fs::write(root.join("Main.luau"), "original\n").expect("seed file");
         test_git(&root, &["add", "--", "Main.luau"]);
@@ -173,7 +164,11 @@ mod tests {
             "staged\n"
         );
         assert_eq!(git_diff(&root, Some("Main.luau"), false).expect("diff"), "");
-        assert!(!git_diff(&root, Some("Main.luau"), true).expect("staged diff").is_empty());
+        assert!(
+            !git_diff(&root, Some("Main.luau"), true)
+                .expect("staged diff")
+                .is_empty()
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -190,7 +185,11 @@ mod tests {
             fs::read_to_string(root.join("Main.luau")).expect("read file"),
             "changed\n"
         );
-        assert!(!git_diff(&root, Some("Main.luau"), false).expect("diff").is_empty());
+        assert!(
+            !git_diff(&root, Some("Main.luau"), false)
+                .expect("diff")
+                .is_empty()
+        );
         assert_eq!(
             git_diff(&root, Some("Main.luau"), true).expect("staged diff"),
             ""

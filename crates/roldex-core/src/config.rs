@@ -1,3 +1,4 @@
+use std::env;
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -21,13 +22,29 @@ impl Config {
                 .then(|| Path::new("roldex.toml").to_path_buf())
         });
 
-        let Some(path) = path else {
-            return Ok(Self::default());
+        let mut config = if let Some(path) = path {
+            let raw = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read configuration {}", path.display()))?;
+            toml::from_str(&raw)
+                .with_context(|| format!("invalid configuration {}", path.display()))?
+        } else {
+            Self::default()
         };
 
-        let raw = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read configuration {}", path.display()))?;
-        toml::from_str(&raw).with_context(|| format!("invalid configuration {}", path.display()))
+        // Small environment overrides make model/latency experiments possible without
+        // editing a project config file.
+        if let Ok(model) = env::var("ROLDEX_MODEL") {
+            if !model.trim().is_empty() {
+                config.ai.model = model;
+            }
+        }
+        if let Ok(raw) = env::var("ROLDEX_AI_TIMEOUT_SECONDS") {
+            if let Ok(seconds) = raw.parse::<u64>() {
+                config.ai.request_timeout_seconds = seconds.clamp(15, 300);
+            }
+        }
+
+        Ok(config)
     }
 }
 
@@ -39,6 +56,8 @@ pub struct AiConfig {
     pub model: String,
     pub api_key_env: String,
     pub temperature: f32,
+    pub request_timeout_seconds: u64,
+    pub max_retries: u32,
 }
 
 impl Default for AiConfig {
@@ -49,6 +68,8 @@ impl Default for AiConfig {
             model: "openrouter/free".into(),
             api_key_env: "OPENROUTER_API_KEY".into(),
             temperature: 0.2,
+            request_timeout_seconds: 75,
+            max_retries: 2,
         }
     }
 }
@@ -89,7 +110,7 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             show_progress: true,
-            compact: false,
+            compact: true,
         }
     }
 }
@@ -103,5 +124,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.permissions.mode, PermissionMode::Workspace);
         assert_eq!(config.ai.model, "openrouter/free");
+        assert_eq!(config.ai.request_timeout_seconds, 75);
+        assert_eq!(config.ai.max_retries, 2);
     }
 }

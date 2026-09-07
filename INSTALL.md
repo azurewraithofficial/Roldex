@@ -21,9 +21,11 @@ The installer will:
 - validate that `roldex.exe` starts
 - add Roldex to your user PATH and current PowerShell session
 - install `RoldexStudio.plugin.lua` into your local Roblox Studio Plugins directory
+- install `RoldexStudioRuntime.plugin.lua` for visual captures, device simulation, virtual-input tests, and advanced playtest automation
+- validate both downloaded Studio plugin files before accepting them
 - fall back to `cargo install` if a compatible release is not available and Rust/Cargo is installed
 
-Restart Roblox Studio after the plugin is installed or updated.
+Restart Roblox Studio after Roldex is installed or updated so Studio loads both plugin files.
 
 ## Configure the AI key
 
@@ -47,7 +49,7 @@ Image/voice generation through the optional media provider uses `POLLINATIONS_AP
 [Environment]::SetEnvironmentVariable("POLLINATIONS_API_KEY", "YOUR_MEDIA_KEY", "User")
 ```
 
-Provider quotas or charges can still apply. Roldex itself does not require a Roldex subscription.
+Provider quotas or charges can still apply. Roldex itself does not require a Roldex subscription. Live web originality/name research may also depend on the configured provider's web-search availability/credits.
 
 ## Run Roldex
 
@@ -57,7 +59,9 @@ Open PowerShell inside the Roblox/Rojo project folder and run:
 roldex
 ```
 
-Roldex starts the localhost Studio bridge on `127.0.0.1:38247` by default. Keep the CLI open while using the Roldex Studio plugin.
+Roldex starts the localhost Studio bridge on `127.0.0.1:38247` by default. Keep the CLI open while using Roldex Studio.
+
+When Studio is connected, Roldex can use the visible plugin to build/edit real Instances and the silent runtime plugin to capture the viewport, simulate supported input, switch device simulations, run playtests, and return evidence to the agent for verification/repair.
 
 ### Full computer access
 
@@ -87,7 +91,7 @@ roldex --version
 
 ## Reinstall or update
 
-Run the same installer commands again. The installer replaces the CLI/plugin with the newest available versions.
+Run the same installer commands again. The installer replaces the CLI and both Studio plugin files with the newest available versions.
 
 Force a source install with Cargo:
 
@@ -95,7 +99,7 @@ Force a source install with Cargo:
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -ForceCargo
 ```
 
-Skip the Studio plugin if needed:
+Skip both Studio plugin files if needed:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -SkipPlugin
@@ -123,8 +127,14 @@ The executable is then under:
 target\release\roldex.exe
 ```
 
-## Studio HTTP permission
+## Studio permissions
 
-The Roldex Studio plugin communicates only with the local Roldex bridge. Roblox Studio may prompt the first time the plugin attempts localhost HTTP access. Allow localhost access for the plugin so it can communicate with `http://127.0.0.1:38247`.
+Both Roldex Studio plugins communicate only with the local Roldex bridge. Roblox Studio may prompt the first time the plugins attempt localhost HTTP access. Allow localhost access so they can communicate with:
 
-If Studio is already open while the plugin is installed/repaired, restart Studio so it loads the new plugin source.
+```text
+http://127.0.0.1:38247
+```
+
+The visual-testing runtime may also request Studio screenshot permission the first time Roldex visually inspects the viewport. That permission is needed only for Studio viewport capture/vision QA.
+
+If Studio is already open while Roldex is installed or repaired, restart Studio so it loads the new plugin source.

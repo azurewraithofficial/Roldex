@@ -12,6 +12,8 @@ use crate::provider::{ChatMessage, OpenAiCompatibleProvider};
 use crate::tools::{AgentEvent, execute_tool, tool_definitions};
 
 const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_IMAGES_PER_TURN: usize = 4;
+const MAX_PROJECT_INSTRUCTIONS_CHARS: usize = 24_000;
 
 pub struct Agent {
     provider: OpenAiCompatibleProvider,
@@ -51,15 +53,40 @@ impl Agent {
     where
         F: FnMut(AgentEvent),
     {
-        let mime = image_mime(image_path)?;
-        let bytes = fs.read_bytes(image_path, MAX_IMAGE_BYTES)?;
-        if bytes.is_empty() {
-            bail!("image file is empty");
+        self.chat_with_images(input, &[image_path.to_owned()], fs, on_event)
+            .await
+    }
+
+    pub async fn chat_with_images<F>(
+        &mut self,
+        input: &str,
+        image_paths: &[String],
+        fs: &WorkspaceFs,
+        on_event: F,
+    ) -> Result<String>
+    where
+        F: FnMut(AgentEvent),
+    {
+        if image_paths.is_empty() {
+            return self.chat_with_tools(input, fs, on_event).await;
         }
-        let data_url = format!("data:{mime};base64,{}", STANDARD.encode(bytes));
+        if image_paths.len() > MAX_IMAGES_PER_TURN {
+            bail!("at most {MAX_IMAGES_PER_TURN} images can be attached to one turn");
+        }
+
+        let mut data_urls = Vec::with_capacity(image_paths.len());
+        for image_path in image_paths {
+            let mime = image_mime(image_path)?;
+            let bytes = fs.read_bytes(image_path, MAX_IMAGE_BYTES)?;
+            if bytes.is_empty() {
+                bail!("image file is empty: {image_path}");
+            }
+            data_urls.push(format!("data:{mime};base64,{}", STANDARD.encode(bytes)));
+        }
+
         self.run_turn(
             input,
-            ChatMessage::user_with_image(input, data_url),
+            ChatMessage::user_with_images(input, data_urls),
             fs,
             on_event,
         )
@@ -78,17 +105,24 @@ impl Agent {
     {
         let mut tools = tool_definitions();
         tools.extend(crate::docs::tool_definitions());
+        tools.extend(crate::project_intel::tool_definitions());
+        tools.extend(crate::media::tool_definitions());
 
-        let mut messages = Vec::with_capacity(self.history.len() + 10);
+        let mut messages = Vec::with_capacity(self.history.len() + 14);
         messages.push(ChatMessage::system(ROBLOX_SYSTEM_PROMPT));
         messages.push(ChatMessage::system(format!(
             "Current project context:\n{}",
             self.project.describe()
         )));
+        if let Some(instructions) = project_instructions(fs) {
+            messages.push(ChatMessage::system(format!(
+                "Project-specific instructions. Follow these when they do not conflict with higher-priority safety or system rules:\n{instructions}"
+            )));
+        }
         messages.extend(self.history.iter().cloned());
         messages.push(user_message);
 
-        const MAX_TOOL_STEPS: usize = 8;
+        const MAX_TOOL_STEPS: usize = 12;
         for _ in 0..MAX_TOOL_STEPS {
             let turn = self.provider.chat(&messages, &tools).await?;
 
@@ -108,9 +142,14 @@ impl Agent {
             ));
 
             for call in tool_calls {
-                let execution = match crate::docs::execute_tool(&call).await {
-                    Some(execution) => execution,
-                    None => execute_tool(&call, fs),
+                let execution = if let Some(execution) = crate::docs::execute_tool(&call).await {
+                    execution
+                } else if let Some(execution) = crate::project_intel::execute_tool(&call, fs) {
+                    execution
+                } else if let Some(execution) = crate::media::execute_tool(&call, fs).await {
+                    execution
+                } else {
+                    execute_tool(&call, fs)
                 };
                 on_event(execution.event);
                 messages.push(ChatMessage::tool(call.id, execution.output));
@@ -124,12 +163,36 @@ impl Agent {
         self.history.push(ChatMessage::user(input));
         self.history.push(ChatMessage::assistant(answer));
 
-        const MAX_HISTORY_MESSAGES: usize = 24;
+        const MAX_HISTORY_MESSAGES: usize = 32;
         if self.history.len() > MAX_HISTORY_MESSAGES {
             let remove = self.history.len() - MAX_HISTORY_MESSAGES;
             self.history.drain(0..remove);
         }
     }
+}
+
+fn project_instructions(fs: &WorkspaceFs) -> Option<String> {
+    let candidates = ["ROLDEX.md", ".roldex/INSTRUCTIONS.md", "AGENTS.md"];
+    let mut sections = Vec::new();
+    let mut remaining = MAX_PROJECT_INSTRUCTIONS_CHARS;
+
+    for path in candidates {
+        if remaining == 0 {
+            break;
+        }
+        let Ok(text) = fs.read_text(path) else {
+            continue;
+        };
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let excerpt: String = trimmed.chars().take(remaining).collect();
+        remaining = remaining.saturating_sub(excerpt.chars().count());
+        sections.push(format!("[{path}]\n{excerpt}"));
+    }
+
+    (!sections.is_empty()).then(|| sections.join("\n\n"))
 }
 
 fn image_mime(image_path: &str) -> Result<&'static str> {

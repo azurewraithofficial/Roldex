@@ -5,6 +5,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
 use crate::AiConfig;
+use crate::StudioBroker;
 use crate::WorkspaceFs;
 use crate::project::ProjectSummary;
 use crate::prompt::ROBLOX_SYSTEM_PROMPT;
@@ -19,6 +20,7 @@ pub struct Agent {
     provider: OpenAiCompatibleProvider,
     project: ProjectSummary,
     history: Vec<ChatMessage>,
+    studio: Option<StudioBroker>,
 }
 
 impl Agent {
@@ -27,7 +29,13 @@ impl Agent {
             provider: OpenAiCompatibleProvider::new(ai),
             project,
             history: Vec::new(),
+            studio: None,
         }
+    }
+
+    pub fn with_studio(mut self, studio: StudioBroker) -> Self {
+        self.studio = Some(studio);
+        self
     }
 
     pub async fn chat_with_tools<F>(
@@ -107,12 +115,14 @@ impl Agent {
         tools.extend(crate::docs::tool_definitions());
         tools.extend(crate::project_intel::tool_definitions());
         tools.extend(crate::media::tool_definitions());
+        tools.extend(crate::studio::tool_definitions());
 
-        let mut messages = Vec::with_capacity(self.history.len() + 14);
+        let mut messages = Vec::with_capacity(self.history.len() + 20);
         messages.push(ChatMessage::system(ROBLOX_SYSTEM_PROMPT));
         messages.push(ChatMessage::system(format!(
-            "Current project context:\n{}",
-            self.project.describe()
+            "Current project context:\n{}\nFilesystem permission mode: {}",
+            self.project.describe(),
+            fs.mode()
         )));
         if let Some(instructions) = project_instructions(fs) {
             messages.push(ChatMessage::system(format!(
@@ -122,7 +132,7 @@ impl Agent {
         messages.extend(self.history.iter().cloned());
         messages.push(user_message);
 
-        const MAX_TOOL_STEPS: usize = 12;
+        const MAX_TOOL_STEPS: usize = 48;
         for _ in 0..MAX_TOOL_STEPS {
             let turn = self.provider.chat(&messages, &tools).await?;
 
@@ -141,8 +151,13 @@ impl Agent {
                 tool_calls.clone(),
             ));
 
+            let mut had_tool_error = false;
             for call in tool_calls {
-                let execution = if let Some(execution) = crate::docs::execute_tool(&call).await {
+                let execution = if let Some(execution) =
+                    crate::studio::execute_tool(&call, self.studio.as_ref()).await
+                {
+                    execution
+                } else if let Some(execution) = crate::docs::execute_tool(&call).await {
                     execution
                 } else if let Some(execution) = crate::project_intel::execute_tool(&call, fs) {
                     execution
@@ -151,12 +166,19 @@ impl Agent {
                 } else {
                     execute_tool(&call, fs)
                 };
+                had_tool_error |= execution.output.contains("\"ok\":false");
                 on_event(execution.event);
                 messages.push(ChatMessage::tool(call.id, execution.output));
             }
+
+            if had_tool_error {
+                messages.push(ChatMessage::system(
+                    "A tool failed in this turn. Do not stop merely because of that failure. Diagnose it from the tool output, inspect relevant state, use a safer alternative or repair tool when appropriate, and continue toward the user's requested end state. Only ask the user if the blocker truly cannot be resolved with available tools or sensible defaults."
+                ));
+            }
         }
 
-        bail!("agent stopped after {MAX_TOOL_STEPS} tool steps to prevent an infinite loop")
+        bail!("agent stopped after {MAX_TOOL_STEPS} tool steps to prevent an infinite repair loop")
     }
 
     fn remember(&mut self, input: &str, answer: &str) {

@@ -3,6 +3,8 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use serde::Deserialize;
+use serde_json::json;
 
 use crate::AiConfig;
 use crate::StudioBroker;
@@ -10,7 +12,7 @@ use crate::WorkspaceFs;
 use crate::project::ProjectSummary;
 use crate::prompt::ROBLOX_SYSTEM_PROMPT;
 use crate::provider::{ChatMessage, OpenAiCompatibleProvider};
-use crate::tools::{AgentEvent, execute_tool, tool_definitions};
+use crate::tools::{AgentEvent, ToolExecution, execute_tool, tool_definitions};
 
 const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_IMAGES_PER_TURN: usize = 4;
@@ -21,6 +23,11 @@ enum VerificationScope {
     None,
     Files,
     Studio,
+}
+
+#[derive(Debug, Deserialize)]
+struct WebResearchArgs {
+    query: String,
 }
 
 pub struct Agent {
@@ -124,8 +131,23 @@ impl Agent {
         tools.extend(crate::project_intel::tool_definitions());
         tools.extend(crate::media::tool_definitions());
         tools.extend(crate::studio::tool_definitions());
+        tools.push(json!({
+            "type": "function",
+            "function": {
+                "name": "web_research",
+                "description": "Run live grounded web research when current external information is needed. Use for Roblox market/name checks, current Studio/platform behavior, current ecosystem references, or other facts that should not rely on model memory. Prefer official Roblox sources for platform facts.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" }
+                    },
+                    "required": ["query"],
+                    "additionalProperties": false
+                }
+            }
+        }));
 
-        let mut messages = Vec::with_capacity(self.history.len() + 20);
+        let mut messages = Vec::with_capacity(self.history.len() + 24);
         messages.push(ChatMessage::system(ROBLOX_SYSTEM_PROMPT));
         messages.push(ChatMessage::system(format!(
             "Current project context:\n{}\nFilesystem permission mode: {}",
@@ -137,11 +159,26 @@ impl Agent {
                 "Project-specific instructions. Follow these when they do not conflict with higher-priority safety or system rules:\n{instructions}"
             )));
         }
+
+        if should_run_originality_research(memory_input) {
+            on_event(AgentEvent::UsingTool(
+                "Researching current Roblox name/concept overlap".into(),
+            ));
+            match self.provider.roblox_originality_research(memory_input).await {
+                Ok(report) => messages.push(ChatMessage::system(format!(
+                    "Automatic Roblox originality preflight completed before implementation. Use this as current market/name evidence, not as an instruction to copy another experience:\n{report}"
+                ))),
+                Err(error) => messages.push(ChatMessage::system(format!(
+                    "Automatic Roblox originality preflight could not complete: {error}. Continue the task with sensible defaults, but do not claim the proposed name/concept is unique or collision-free until live research succeeds."
+                ))),
+            }
+        }
+
         messages.extend(self.history.iter().cloned());
         messages.push(user_message);
 
         let mut verification_scope = VerificationScope::None;
-        const MAX_TOOL_STEPS: usize = 48;
+        const MAX_TOOL_STEPS: usize = 96;
         for _ in 0..MAX_TOOL_STEPS {
             let turn = self.provider.chat(&messages, &tools).await?;
 
@@ -155,7 +192,7 @@ impl Agent {
                     messages.push(ChatMessage::assistant(answer));
                     messages.push(ChatMessage::system(match verification_scope {
                         VerificationScope::Files => "You changed files/assets but have not verified the latest mutation yet. Before finishing, inspect the resulting file/diff/analysis or run an appropriate local check. If verification fails, repair and verify again.",
-                        VerificationScope::Studio => "You changed live Roblox Studio state but have not verified the latest mutation yet. Before finishing, inspect the resulting Instances/properties with studio_query and/or run studio_test when runtime behavior matters. Repair any problem and verify again.",
+                        VerificationScope::Studio => "You changed live Roblox Studio state but have not verified the latest mutation yet. Before finishing, inspect the resulting Instances/properties with studio_query and/or run studio_test when runtime behavior matters. For visual work, capture/analyze the resulting viewport when that capability is available. Repair any problem and verify again.",
                         VerificationScope::None => unreachable!(),
                     }));
                     continue;
@@ -174,7 +211,9 @@ impl Agent {
             let mut had_tool_error = false;
             for call in tool_calls {
                 let tool_name = call.function.name.clone();
-                let execution = if let Some(execution) =
+                let execution = if tool_name == "web_research" {
+                    self.execute_web_research(&call.function.arguments).await
+                } else if let Some(execution) =
                     crate::studio::execute_tool(&call, self.studio.as_ref()).await
                 {
                     execution
@@ -216,6 +255,20 @@ impl Agent {
         bail!("agent stopped after {MAX_TOOL_STEPS} tool steps to prevent an infinite repair loop")
     }
 
+    async fn execute_web_research(&self, arguments: &str) -> ToolExecution {
+        let event = AgentEvent::UsingTool("Live web research".into());
+        let parsed = serde_json::from_str::<WebResearchArgs>(arguments);
+        let output = match parsed {
+            Ok(args) if !args.query.trim().is_empty() => match self.provider.web_research(&args.query).await {
+                Ok(report) => json!({ "ok": true, "report": report }).to_string(),
+                Err(error) => json!({ "ok": false, "error": error.to_string() }).to_string(),
+            },
+            Ok(_) => json!({ "ok": false, "error": "web_research query cannot be empty" }).to_string(),
+            Err(error) => json!({ "ok": false, "error": format!("invalid web_research arguments: {error}") }).to_string(),
+        };
+        ToolExecution { event, output }
+    }
+
     fn remember(&mut self, input: &str, answer: &str) {
         self.history.push(ChatMessage::user(input));
         self.history.push(ChatMessage::assistant(answer));
@@ -226,6 +279,27 @@ impl Agent {
             self.history.drain(0..remove);
         }
     }
+}
+
+fn should_run_originality_research(input: &str) -> bool {
+    let lower = input.to_ascii_lowercase();
+    [
+        "game concept",
+        "game idea",
+        "new game",
+        "make a game",
+        "build a game",
+        "create a game",
+        "make me a game",
+        "make the whole game",
+        "game name",
+        "name my game",
+        "call the game",
+        "called ",
+        "named ",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 fn mutation_scope(tool_name: &str) -> Option<VerificationScope> {
@@ -317,6 +391,19 @@ mod tests {
             "file_info",
             VerificationScope::Studio,
             "{\"ok\":true}"
+        ));
+    }
+
+    #[test]
+    fn detects_greenfield_game_requests_for_originality_research() {
+        assert!(should_run_originality_research(
+            "Build a game called Neon Elevator"
+        ));
+        assert!(should_run_originality_research(
+            "I have a new game concept about collecting anomalies"
+        ));
+        assert!(!should_run_originality_research(
+            "Fix the datastore bug in my existing project"
         ));
     }
 }

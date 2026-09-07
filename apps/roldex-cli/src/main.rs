@@ -258,7 +258,11 @@ fn print_doctor(project: &ProjectSummary, config: &Config, bridge_available: boo
             .join("RoldexStudio.plugin.lua");
         println!(
             "Studio plugin: {} ({})",
-            if plugin.exists() { "installed" } else { "not found" },
+            if plugin.exists() {
+                "installed"
+            } else {
+                "not found"
+            },
             plugin.display()
         );
     }

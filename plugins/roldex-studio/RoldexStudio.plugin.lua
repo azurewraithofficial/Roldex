@@ -8,6 +8,8 @@ local StudioService = game:GetService("StudioService")
 local DEFAULT_BRIDGE_URL = "http://127.0.0.1:38247"
 local MAX_SELECTION_ITEMS = 20
 local MAX_SOURCE_CHARS = 60000
+local MAX_ATTRIBUTES = 20
+local MAX_DETAIL_CHARS = 2600
 
 local colors = {
 	background = Color3.fromRGB(20, 22, 27),
@@ -263,6 +265,76 @@ local function isScriptContainer(instance)
 		and (instance:IsA("Script") or instance:IsA("LocalScript") or instance:IsA("ModuleScript"))
 end
 
+local function shortValue(value, maxChars)
+	local text = tostring(value)
+	if #text > maxChars then
+		return text:sub(1, maxChars) .. "…"
+	end
+	return text
+end
+
+local function describeAttributes(instance, parts)
+	local attributes = instance:GetAttributes()
+	local names = {}
+	for name in pairs(attributes) do
+		table.insert(names, name)
+	end
+	table.sort(names)
+
+	if #names == 0 then
+		return
+	end
+
+	local formatted = {}
+	for index, name in ipairs(names) do
+		if index > MAX_ATTRIBUTES then
+			table.insert(formatted, "…")
+			break
+		end
+		table.insert(formatted, name .. "=" .. shortValue(attributes[name], 120))
+	end
+	table.insert(parts, "Attributes{" .. table.concat(formatted, ", ") .. "}")
+end
+
+local function describeInstance(instance)
+	local parts = { "Children=" .. tostring(#instance:GetChildren()) }
+
+	if instance:IsA("BasePart") then
+		table.insert(parts, "Position=" .. shortValue(instance.Position, 120))
+		table.insert(parts, "Size=" .. shortValue(instance.Size, 120))
+		table.insert(parts, "Anchored=" .. tostring(instance.Anchored))
+		table.insert(parts, "CanCollide=" .. tostring(instance.CanCollide))
+		table.insert(parts, "Material=" .. tostring(instance.Material))
+	elseif instance:IsA("Model") then
+		local ok, pivot = pcall(function()
+			return instance:GetPivot()
+		end)
+		if ok then
+			table.insert(parts, "PivotPosition=" .. shortValue(pivot.Position, 120))
+		end
+		table.insert(parts, "PrimaryPart=" .. (instance.PrimaryPart and instance.PrimaryPart.Name or "none"))
+	elseif instance:IsA("GuiObject") then
+		table.insert(parts, "Position=" .. shortValue(instance.Position, 160))
+		table.insert(parts, "Size=" .. shortValue(instance.Size, 160))
+		table.insert(parts, "Visible=" .. tostring(instance.Visible))
+		table.insert(parts, "ZIndex=" .. tostring(instance.ZIndex))
+	elseif instance:IsA("Sound") then
+		table.insert(parts, "SoundId=" .. shortValue(instance.SoundId, 240))
+		table.insert(parts, "Volume=" .. tostring(instance.Volume))
+		table.insert(parts, "Looped=" .. tostring(instance.Looped))
+	elseif instance:IsA("ParticleEmitter") then
+		table.insert(parts, "Enabled=" .. tostring(instance.Enabled))
+		table.insert(parts, "Rate=" .. tostring(instance.Rate))
+	end
+
+	describeAttributes(instance, parts)
+	local text = table.concat(parts, "; ")
+	if #text > MAX_DETAIL_CHARS then
+		text = text:sub(1, MAX_DETAIL_CHARS) .. "…"
+	end
+	return text
+end
+
 local function updateSelectionLabel()
 	local selected = Selection:Get()
 	local active = StudioService.ActiveScript
@@ -283,6 +355,7 @@ local function collectSelection()
 			name = instance.Name,
 			class_name = instance.ClassName,
 			full_name = instance:GetFullName(),
+			details = describeInstance(instance),
 		})
 	end
 	return result

@@ -448,7 +448,9 @@ fn execute_git_unstage(call: &ToolCall, fs: &WorkspaceFs) -> ToolExecution {
                 error_output(error.to_string())
             } else {
                 match git_unstage_file(fs.root(), &args.path) {
-                    Ok(status) => json!({ "ok": true, "path": args.path, "status": status }).to_string(),
+                    Ok(status) => {
+                        json!({ "ok": true, "path": args.path, "status": status }).to_string()
+                    }
                     Err(error) => error_output(error.to_string()),
                 }
             };
@@ -472,7 +474,9 @@ fn execute_git_restore(call: &ToolCall, fs: &WorkspaceFs) -> ToolExecution {
                 error_output(error.to_string())
             } else {
                 match git_restore_worktree_file(fs.root(), &args.path) {
-                    Ok(status) => json!({ "ok": true, "path": args.path, "status": status }).to_string(),
+                    Ok(status) => {
+                        json!({ "ok": true, "path": args.path, "status": status }).to_string()
+                    }
                     Err(error) => error_output(error.to_string()),
                 }
             };

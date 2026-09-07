@@ -10,7 +10,13 @@ pub fn git_status(root: &Path) -> Result<String> {
 }
 
 pub fn git_diff(root: &Path, path: Option<&str>, staged: bool) -> Result<String> {
-    let mut args = vec!["--no-pager", "diff", "--no-ext-diff", "--no-textconv", "--color=never"];
+    let mut args = vec![
+        "--no-pager",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--color=never",
+    ];
     if staged {
         args.push("--cached");
     }

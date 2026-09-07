@@ -42,22 +42,27 @@ impl ChatMessage {
     }
 
     pub fn user_with_image(text: impl Into<String>, data_url: impl Into<String>) -> Self {
-        let text = text.into();
-        let data_url = data_url.into();
+        Self::user_with_images(text, vec![data_url.into()])
+    }
+
+    pub fn user_with_images(text: impl Into<String>, data_urls: Vec<String>) -> Self {
+        let mut parts = Vec::with_capacity(data_urls.len() + 1);
+        parts.push(json!({
+            "type": "text",
+            "text": text.into()
+        }));
+        for data_url in data_urls {
+            parts.push(json!({
+                "type": "image_url",
+                "image_url": {
+                    "url": data_url
+                }
+            }));
+        }
+
         Self {
             role: "user".into(),
-            content: Some(json!([
-                {
-                    "type": "text",
-                    "text": text
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": data_url
-                    }
-                }
-            ])),
+            content: Some(Value::Array(parts)),
             tool_calls: None,
             tool_call_id: None,
         }

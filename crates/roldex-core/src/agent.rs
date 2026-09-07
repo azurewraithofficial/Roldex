@@ -76,7 +76,9 @@ impl Agent {
     where
         F: FnMut(AgentEvent),
     {
-        let tools = tool_definitions();
+        let mut tools = tool_definitions();
+        tools.extend(crate::docs::tool_definitions());
+
         let mut messages = Vec::with_capacity(self.history.len() + 10);
         messages.push(ChatMessage::system(ROBLOX_SYSTEM_PROMPT));
         messages.push(ChatMessage::system(format!(
@@ -106,7 +108,10 @@ impl Agent {
             ));
 
             for call in tool_calls {
-                let execution = execute_tool(&call, fs);
+                let execution = match crate::docs::execute_tool(&call).await {
+                    Some(execution) => execution,
+                    None => execute_tool(&call, fs),
+                };
                 on_event(execution.event);
                 messages.push(ChatMessage::tool(call.id, execution.output));
             }

@@ -50,6 +50,21 @@ impl WorkspaceFs {
         fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))
     }
 
+    pub fn read_bytes(&self, relative: impl AsRef<Path>, max_bytes: u64) -> Result<Vec<u8>> {
+        let path = self.resolve_existing(relative.as_ref())?;
+        let metadata =
+            fs::metadata(&path).with_context(|| format!("failed to inspect {}", path.display()))?;
+        if metadata.len() > max_bytes {
+            bail!(
+                "{} is too large ({} bytes; limit is {} bytes)",
+                path.display(),
+                metadata.len(),
+                max_bytes
+            );
+        }
+        fs::read(&path).with_context(|| format!("failed to read {}", path.display()))
+    }
+
     pub fn write_text(&self, relative: impl AsRef<Path>, content: &str) -> Result<()> {
         self.require_write()?;
         if content.len() > MAX_WRITE_BYTES {

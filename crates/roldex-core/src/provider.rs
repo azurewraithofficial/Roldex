@@ -3,7 +3,7 @@ use std::env;
 use anyhow::{Context, Result, bail};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::AiConfig;
 
@@ -25,7 +25,7 @@ pub struct ToolCall {
 pub struct ChatMessage {
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+    pub content: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -41,6 +41,28 @@ impl ChatMessage {
         Self::text("user", content)
     }
 
+    pub fn user_with_image(text: impl Into<String>, data_url: impl Into<String>) -> Self {
+        let text = text.into();
+        let data_url = data_url.into();
+        Self {
+            role: "user".into(),
+            content: Some(json!([
+                {
+                    "type": "text",
+                    "text": text
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": data_url
+                    }
+                }
+            ])),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
     pub fn assistant(content: impl Into<String>) -> Self {
         Self::text("assistant", content)
     }
@@ -48,7 +70,7 @@ impl ChatMessage {
     pub fn assistant_turn(content: Option<String>, tool_calls: Vec<ToolCall>) -> Self {
         Self {
             role: "assistant".into(),
-            content,
+            content: content.map(Value::String),
             tool_calls: Some(tool_calls),
             tool_call_id: None,
         }
@@ -57,7 +79,7 @@ impl ChatMessage {
     pub fn tool(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: "tool".into(),
-            content: Some(content.into()),
+            content: Some(Value::String(content.into())),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
         }
@@ -66,7 +88,7 @@ impl ChatMessage {
     fn text(role: &str, content: impl Into<String>) -> Self {
         Self {
             role: role.into(),
-            content: Some(content.into()),
+            content: Some(Value::String(content.into())),
             tool_calls: None,
             tool_call_id: None,
         }

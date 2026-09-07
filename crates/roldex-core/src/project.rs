@@ -125,9 +125,8 @@ fn has_source_marker(root: &Path) -> Result<bool> {
         if !entry.file_type()?.is_file() {
             continue;
         }
-        match entry.path().extension().and_then(|value| value.to_str()) {
-            Some("luau" | "lua") => return Ok(true),
-            _ => {}
+        if let Some("luau" | "lua") = entry.path().extension().and_then(|value| value.to_str()) {
+            return Ok(true);
         }
     }
     Ok(false)

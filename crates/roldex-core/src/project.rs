@@ -49,7 +49,8 @@ impl ProjectSummary {
         ];
         let has_studio_marker = studio_markers.iter().any(|name| root.join(name).is_dir());
         let has_root_rojo_marker = has_rojo_marker(&root)?;
-        let looks_like_project = has_studio_marker || has_root_rojo_marker || has_source_marker(&root)?;
+        let looks_like_project =
+            has_studio_marker || has_root_rojo_marker || has_source_marker(&root)?;
 
         let (max_depth, max_entries) = if looks_like_project {
             (PROJECT_SCAN_MAX_DEPTH, PROJECT_SCAN_MAX_ENTRIES)
@@ -188,14 +189,7 @@ fn scan(
             if should_skip_dir(&name) {
                 continue;
             }
-            scan(
-                &child,
-                depth + 1,
-                max_depth,
-                max_entries,
-                scanned,
-                stats,
-            )?;
+            scan(&child, depth + 1, max_depth, max_entries, scanned, stats)?;
             continue;
         }
 

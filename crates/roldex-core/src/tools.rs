@@ -3,6 +3,7 @@ use std::fmt;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::analysis::analyze_luau;
 use crate::git::{git_diff, git_status};
 use crate::search::search_text;
 use crate::{ToolCall, WorkspaceFs, project_tree};
@@ -14,6 +15,7 @@ pub enum AgentEvent {
     Patching(String),
     Deleting(String),
     Searching(String),
+    AnalyzingLuau,
     InspectingProject,
     InspectingGit(String),
     UsingTool(String),
@@ -27,6 +29,7 @@ impl fmt::Display for AgentEvent {
             Self::Patching(path) => write!(f, "Patching {path}"),
             Self::Deleting(path) => write!(f, "Deleting {path}"),
             Self::Searching(query) => write!(f, "Searching project for {query:?}"),
+            Self::AnalyzingLuau => write!(f, "Analyzing Luau and Roblox security patterns"),
             Self::InspectingProject => write!(f, "Inspecting project tree"),
             Self::InspectingGit(action) => write!(f, "Checking Git {action}"),
             Self::UsingTool(name) => write!(f, "Using tool {name}"),
@@ -62,6 +65,11 @@ struct SearchTextArgs {
     query: String,
     case_sensitive: Option<bool>,
     max_results: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AnalyzeLuauArgs {
+    max_findings: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -106,6 +114,20 @@ pub fn tool_definitions() -> Vec<Value> {
                         "max_results": { "type": "integer", "minimum": 1, "maximum": 100 }
                     },
                     "required": ["query"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "analyze_luau",
+                "description": "Run a bounded deterministic Roblox/Luau audit over the project. Reports deprecated scheduler/physics APIs, client DataStore access, risky InvokeClient usage, possible non-yielding loops, server scripts in replicated locations, and heuristic remote-validation risks. Findings include severity, rule ID, file, line and remediation.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "max_findings": { "type": "integer", "minimum": 1, "maximum": 200 }
+                    },
                     "additionalProperties": false
                 }
             }
@@ -207,6 +229,7 @@ pub fn execute_tool(call: &ToolCall, fs: &WorkspaceFs) -> ToolExecution {
     match call.function.name.as_str() {
         "project_tree" => execute_tree(call, fs),
         "search_text" => execute_search(call, fs),
+        "analyze_luau" => execute_analyze_luau(call, fs),
         "read_file" => execute_read(call, fs),
         "replace_in_file" => execute_replace(call, fs),
         "write_file" => execute_write(call, fs),
@@ -255,6 +278,23 @@ fn execute_search(call: &ToolCall, fs: &WorkspaceFs) -> ToolExecution {
             ToolExecution { event, output }
         }
         Err(error) => invalid_arguments("search_text", error),
+    }
+}
+
+fn execute_analyze_luau(call: &ToolCall, fs: &WorkspaceFs) -> ToolExecution {
+    let parsed = parse_optional_args::<AnalyzeLuauArgs>(&call.function.arguments);
+    match parsed {
+        Ok(args) => {
+            let output = match analyze_luau(fs.root(), args.max_findings.unwrap_or(100)) {
+                Ok(report) => json!({ "ok": true, "report": report }).to_string(),
+                Err(error) => error_output(error.to_string()),
+            };
+            ToolExecution {
+                event: AgentEvent::AnalyzingLuau,
+                output,
+            }
+        }
+        Err(error) => invalid_arguments("analyze_luau", error),
     }
 }
 

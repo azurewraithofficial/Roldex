@@ -116,6 +116,8 @@ struct ChatRequest<'a> {
     tool_choice: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     parallel_tool_calls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<&'a Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -223,6 +225,19 @@ impl OpenAiCompatibleProvider {
         })?;
 
         let has_tools = !tools.is_empty();
+        let provider_preferences = if self.is_openrouter() {
+            let sort = match self.config.openrouter_sort.as_str() {
+                "price" | "throughput" | "latency" => self.config.openrouter_sort.as_str(),
+                _ => "latency",
+            };
+            Some(json!({
+                "sort": sort,
+                "allow_fallbacks": true,
+                "require_parameters": true
+            }))
+        } else {
+            None
+        };
         let request = ChatRequest {
             model: &self.config.model,
             messages,
@@ -230,6 +245,7 @@ impl OpenAiCompatibleProvider {
             tools: has_tools.then_some(tools),
             tool_choice: has_tools.then_some("auto"),
             parallel_tool_calls: has_tools.then_some(false),
+            provider: provider_preferences.as_ref(),
         };
 
         let retries = self.config.max_retries.min(4);

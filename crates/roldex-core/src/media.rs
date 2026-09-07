@@ -164,18 +164,16 @@ async fn generate_image(args: GenerateImageArgs, fs: &WorkspaceFs) -> Result<Med
         bail!("image generation provider returned unexpected content type {media_type}");
     }
 
-    let bytes = response.bytes().await.context("failed to read generated image")?;
+    let bytes = response
+        .bytes()
+        .await
+        .context("failed to read generated image")?;
     if bytes.len() > MAX_MEDIA_BYTES {
         bail!("generated image exceeded {MAX_MEDIA_BYTES} bytes");
     }
 
     let extension = image_extension(&media_type);
-    let path = output_path(
-        args.output_path.as_deref(),
-        "image",
-        prompt,
-        extension,
-    );
+    let path = output_path(args.output_path.as_deref(), "image", prompt, extension);
     fs.write_bytes(&path, &bytes)?;
     Ok(MediaResult {
         path,
@@ -222,7 +220,10 @@ async fn generate_voice(args: GenerateVoiceArgs, fs: &WorkspaceFs) -> Result<Med
         bail!("voice generation provider returned unexpected content type {media_type}");
     }
 
-    let bytes = response.bytes().await.context("failed to read generated audio")?;
+    let bytes = response
+        .bytes()
+        .await
+        .context("failed to read generated audio")?;
     if bytes.len() > MAX_MEDIA_BYTES {
         bail!("generated audio exceeded {MAX_MEDIA_BYTES} bytes");
     }

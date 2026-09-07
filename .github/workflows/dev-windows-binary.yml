@@ -1,0 +1,48 @@
+name: Dev Windows Binary
+
+on:
+  push:
+    branches:
+      - roldex-intelligence-studio-vision
+    paths-ignore:
+      - "dist/dev/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: roldex-dev-windows-binary
+  cancel-in-progress: true
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build Roldex
+        run: cargo build --release -p roldex-cli
+      - name: Stage verified development binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/dev | Out-Null
+          Copy-Item -Force target/release/roldex.exe dist/dev/roldex-windows-x86_64.exe
+          $hash = (Get-FileHash -Algorithm SHA256 dist/dev/roldex-windows-x86_64.exe).Hash.ToLowerInvariant()
+          "$hash  roldex-windows-x86_64.exe" | Set-Content -Encoding ascii dist/dev/roldex-windows-x86_64.exe.sha256
+          & dist/dev/roldex-windows-x86_64.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "Development Roldex binary failed startup validation." }
+      - name: Commit development binary
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/dev/roldex-windows-x86_64.exe dist/dev/roldex-windows-x86_64.exe.sha256
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Development binary unchanged."
+            exit 0
+          }
+          git commit -m "chore: refresh development Windows binary [skip ci]"
+          git push origin HEAD:roldex-intelligence-studio-vision

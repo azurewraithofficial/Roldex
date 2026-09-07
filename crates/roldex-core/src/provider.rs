@@ -171,16 +171,27 @@ impl OpenAiCompatibleProvider {
     }
 
     pub async fn roblox_originality_research(&self, request: &str) -> Result<String> {
+        self.web_research_with_system(
+            "You are the market/originality research stage for a Roblox development agent. Use web search before answering. Research current Roblox experiences that have the same or a strongly similar name, mechanic, progression loop, visual premise, or core concept. Search exact candidate names when present and also semantic concept variants. Prioritize Roblox experience pages and trustworthy current sources. Do not say a name or concept is unique merely because the first search has no result. Return a compact report with: name-collision risk, closest existing experiences, concept-overlap risk, differentiators to preserve/add, and a final recommendation: keep / rename / redesign / safe-enough-to-proceed. Include source links in the report. This report is advisory; the build agent still makes the final implementation decisions.",
+            request,
+        )
+        .await
+    }
+
+    pub async fn web_research(&self, request: &str) -> Result<String> {
+        self.web_research_with_system(
+            "You are the grounded web-research stage for a Roblox development agent. Use live web search before answering. Prefer official Roblox Creator Hub/Developer Forum announcements for platform facts and current Roblox experience pages or other direct sources for market/name research. Distinguish confirmed facts from inference, include useful source links, and keep the report compact enough for another agent to act on.",
+            request,
+        )
+        .await
+    }
+
+    async fn web_research_with_system(&self, system: &str, request: &str) -> Result<String> {
         if !self.is_openrouter() {
-            bail!("automatic live originality research currently requires the OpenRouter provider");
+            bail!("live web research currently requires the OpenRouter provider");
         }
 
-        let messages = vec![
-            ChatMessage::system(
-                "You are the market/originality research stage for a Roblox development agent. Use web search before answering. Research current Roblox experiences that have the same or a strongly similar name, mechanic, progression loop, visual premise, or core concept. Search exact candidate names when present and also semantic concept variants. Prioritize Roblox experience pages and trustworthy current sources. Do not say a name or concept is unique merely because the first search has no result. Return a compact report with: name-collision risk, closest existing experiences, concept-overlap risk, differentiators to preserve/add, and a final recommendation: keep / rename / redesign / safe-enough-to-proceed. Include source links in the report. This report is advisory; the build agent still makes the final implementation decisions."
-            ),
-            ChatMessage::user(request),
-        ];
+        let messages = vec![ChatMessage::system(system), ChatMessage::user(request)];
         let tools = self.openrouter_web_tools();
         let turn = self.chat(&messages, &tools).await?;
         if !turn.tool_calls.is_empty() {

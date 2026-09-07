@@ -1,8 +1,8 @@
 use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -132,7 +132,12 @@ impl TerminalSession {
     fn new(event_tx: mpsc::UnboundedSender<Event>) -> Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, cursor::Hide)?;
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            cursor::Hide
+        )?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
         terminal.clear()?;
@@ -440,10 +445,7 @@ fn doctor_text(context: &UiContext) -> String {
     #[cfg(windows)]
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
         let base = PathBuf::from(local_app_data).join("Roblox").join("Plugins");
-        for name in [
-            "RoldexStudio.plugin.lua",
-            "RoldexStudioRuntime.plugin.lua",
-        ] {
+        for name in ["RoldexStudio.plugin.lua", "RoldexStudioRuntime.plugin.lua"] {
             lines.push(format!(
                 "{}: {}",
                 name,
@@ -576,7 +578,9 @@ fn draw(
         );
 
         let footer = if state.busy {
-            let elapsed = state.started_at.map_or(0, |started| started.elapsed().as_secs());
+            let elapsed = state
+                .started_at
+                .map_or(0, |started| started.elapsed().as_secs());
             Line::from(vec![
                 Span::styled("esc", Style::default().fg(Color::Magenta)),
                 Span::raw(" stop  •  "),
@@ -610,7 +614,9 @@ fn render_log(log: &[LogEntry]) -> Vec<Line<'static>> {
         let (label, style) = match entry.kind {
             LogKind::User => (
                 "you",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
             LogKind::Assistant => (
                 "roldex",
@@ -633,9 +639,7 @@ fn render_log(log: &[LogEntry]) -> Vec<Line<'static>> {
                 LogKind::Error => Style::default().fg(Color::Red),
                 _ if raw.trim_start().starts_with('✓') => Style::default().fg(Color::Green),
                 _ if raw.trim_start().starts_with('•') => Style::default().fg(Color::Cyan),
-                _ if raw.trim_start().starts_with("```") => {
-                    Style::default().fg(Color::DarkGray)
-                }
+                _ if raw.trim_start().starts_with("```") => Style::default().fg(Color::DarkGray),
                 _ => Style::default(),
             };
             lines.push(Line::from(Span::styled(raw.to_string(), line_style)));

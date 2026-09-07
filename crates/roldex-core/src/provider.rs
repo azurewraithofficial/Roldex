@@ -146,6 +146,51 @@ impl OpenAiCompatibleProvider {
         }
     }
 
+    pub fn is_openrouter(&self) -> bool {
+        self.config.provider == "openrouter"
+    }
+
+    pub fn openrouter_web_tools(&self) -> Vec<Value> {
+        if !self.is_openrouter() {
+            return Vec::new();
+        }
+        vec![
+            json!({
+                "type": "openrouter:web_search",
+                "parameters": {
+                    "max_results": 8
+                }
+            }),
+            json!({
+                "type": "openrouter:web_fetch",
+                "parameters": {
+                    "max_content_tokens": 12000
+                }
+            }),
+        ]
+    }
+
+    pub async fn roblox_originality_research(&self, request: &str) -> Result<String> {
+        if !self.is_openrouter() {
+            bail!("automatic live originality research currently requires the OpenRouter provider");
+        }
+
+        let messages = vec![
+            ChatMessage::system(
+                "You are the market/originality research stage for a Roblox development agent. Use web search before answering. Research current Roblox experiences that have the same or a strongly similar name, mechanic, progression loop, visual premise, or core concept. Search exact candidate names when present and also semantic concept variants. Prioritize Roblox experience pages and trustworthy current sources. Do not say a name or concept is unique merely because the first search has no result. Return a compact report with: name-collision risk, closest existing experiences, concept-overlap risk, differentiators to preserve/add, and a final recommendation: keep / rename / redesign / safe-enough-to-proceed. Include source links in the report. This report is advisory; the build agent still makes the final implementation decisions."
+            ),
+            ChatMessage::user(request),
+        ];
+        let tools = self.openrouter_web_tools();
+        let turn = self.chat(&messages, &tools).await?;
+        if !turn.tool_calls.is_empty() {
+            bail!("web research unexpectedly returned unresolved client tool calls");
+        }
+        turn.content
+            .filter(|content| !content.trim().is_empty())
+            .context("web research returned an empty report")
+    }
+
     pub async fn chat(&self, messages: &[ChatMessage], tools: &[Value]) -> Result<AssistantTurn> {
         if self.config.provider != "openrouter" && self.config.provider != "openai-compatible" {
             bail!(

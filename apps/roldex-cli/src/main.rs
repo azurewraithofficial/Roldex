@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use roldex_core::{Agent, Config, PermissionMode, ProjectSummary, StudioBroker, WorkspaceFs, project_tree};
+use roldex_core::{
+    Agent, Config, PermissionMode, ProjectSummary, StudioBroker, WorkspaceFs, project_tree,
+};
 use tokio::sync::Mutex;
 
 const DEFAULT_STUDIO_PORT: u16 = 38247;
@@ -231,7 +233,9 @@ fn print_banner(project: &ProjectSummary, config: &Config) {
     println!("Detected: {}", project.kind);
     println!("Model: {}", config.ai.model);
     println!("Permissions: {}", config.permissions.mode);
-    println!("Just type the finished result you want. Roldex should inspect, build, test, repair and verify it without unnecessary pauses.");
+    println!(
+        "Just type the finished result you want. Roldex should inspect, build, test, repair and verify it without unnecessary pauses."
+    );
 }
 
 fn print_doctor(
@@ -275,11 +279,19 @@ fn print_doctor(
     );
     println!(
         "Studio bridge listener: {} on 127.0.0.1:{port}",
-        if bridge_available { "running" } else { "not running" }
+        if bridge_available {
+            "running"
+        } else {
+            "not running"
+        }
     );
     println!(
         "Studio plugin connection: {}",
-        if studio_connected { "connected" } else { "not connected" }
+        if studio_connected {
+            "connected"
+        } else {
+            "not connected"
+        }
     );
 
     #[cfg(windows)]

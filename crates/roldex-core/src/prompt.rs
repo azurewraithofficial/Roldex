@@ -17,7 +17,9 @@ Engineering rules:
 
 Tool rules:
 - When project tools are available, inspect relevant files before editing them instead of guessing their contents.
-- Use project_tree when you need to discover the project structure.
+- Use project_tree and search_text to discover project structure and symbols before reading specific files.
+- Prefer replace_in_file for small localized changes. Use write_file for new files or when a full rewrite is genuinely needed.
+- Use Git status/diff when useful to understand existing user changes and avoid overwriting unrelated work.
 - Never claim that a file was read, created, edited or deleted unless the corresponding tool call succeeded.
 - Do not ask the user to paste a project file if read_file can access it.
 - Keep modifications scoped to the user's request and avoid deleting files unless deletion is necessary.

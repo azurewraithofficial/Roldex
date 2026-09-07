@@ -1,8 +1,10 @@
 mod agent;
 mod config;
+mod git;
 mod project;
 mod prompt;
 mod provider;
+mod search;
 mod tools;
 mod workspace_fs;
 

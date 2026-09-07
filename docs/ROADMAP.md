@@ -9,11 +9,14 @@
 - [x] bounded chat history
 - [x] Roblox/Rojo/Luau project detection
 - [x] workspace-scoped filesystem primitives
+- [x] symlink/path escape protection
 - [x] basic project tree/read commands
+- [x] bounded project text search
 - [x] structured model tool calls
 - [x] automatic create/replace/delete workflow
-- [ ] patch-based edits for lower token usage
-- [ ] Git status/diff/restore tools
+- [x] patch-based exact edits for lower token usage
+- [x] Git status/diff tools
+- [ ] Git restore/undo tools
 - [ ] image-path vision input
 - [ ] Roblox docs web retrieval
 - [ ] streaming model output

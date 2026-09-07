@@ -1,11 +1,11 @@
 use anyhow::{Context, Result, bail};
 
 use crate::AiConfig;
+use crate::WorkspaceFs;
 use crate::project::ProjectSummary;
 use crate::prompt::ROBLOX_SYSTEM_PROMPT;
 use crate::provider::{ChatMessage, OpenAiCompatibleProvider};
 use crate::tools::{AgentEvent, execute_tool, tool_definitions};
-use crate::WorkspaceFs;
 
 pub struct Agent {
     provider: OpenAiCompatibleProvider,
@@ -55,7 +55,10 @@ impl Agent {
             }
 
             let tool_calls = turn.tool_calls;
-            messages.push(ChatMessage::assistant_turn(turn.content, tool_calls.clone()));
+            messages.push(ChatMessage::assistant_turn(
+                turn.content,
+                tool_calls.clone(),
+            ));
 
             for call in tool_calls {
                 let execution = execute_tool(&call, fs);

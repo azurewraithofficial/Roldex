@@ -28,8 +28,8 @@ impl WorkspaceFs {
 
     pub fn read_text(&self, relative: impl AsRef<Path>) -> Result<String> {
         let path = self.resolve(relative.as_ref())?;
-        let metadata = fs::metadata(&path)
-            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        let metadata =
+            fs::metadata(&path).with_context(|| format!("failed to inspect {}", path.display()))?;
         if metadata.len() > MAX_TEXT_FILE_BYTES {
             bail!(
                 "{} is too large for one read ({} bytes; limit is {} bytes)",

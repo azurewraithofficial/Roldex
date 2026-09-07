@@ -134,7 +134,9 @@ fn execute_read(call: &ToolCall, fs: &WorkspaceFs) -> ToolExecution {
         Ok(args) => {
             let event = AgentEvent::Reading(args.path.clone());
             let output = match fs.read_text(&args.path) {
-                Ok(content) => json!({ "ok": true, "path": args.path, "content": content }).to_string(),
+                Ok(content) => {
+                    json!({ "ok": true, "path": args.path, "content": content }).to_string()
+                }
                 Err(error) => error_output(error.to_string()),
             };
             ToolExecution { event, output }

@@ -7,6 +7,7 @@ use crate::PermissionMode;
 
 const MAX_TEXT_FILE_BYTES: u64 = 256 * 1024;
 const MAX_WRITE_BYTES: usize = 512 * 1024;
+const MAX_BINARY_WRITE_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct WorkspaceFs {
@@ -27,8 +28,31 @@ impl WorkspaceFs {
         &self.root
     }
 
+    pub fn mode(&self) -> PermissionMode {
+        self.mode
+    }
+
     pub fn validate_relative_path(&self, relative: impl AsRef<Path>) -> Result<PathBuf> {
         self.resolve_lexical(relative.as_ref())
+    }
+
+    pub fn resolve_user_read_path(&self, requested: impl AsRef<Path>) -> Result<PathBuf> {
+        let requested = requested.as_ref();
+        if requested.as_os_str().is_empty() {
+            bail!("path cannot be empty");
+        }
+
+        if requested.is_absolute() {
+            let canonical = requested
+                .canonicalize()
+                .with_context(|| format!("failed to resolve {}", requested.display()))?;
+            if self.mode != PermissionMode::FullAccess {
+                self.require_inside_root(&canonical)?;
+            }
+            return Ok(canonical);
+        }
+
+        self.resolve_existing(requested)
     }
 
     pub fn ensure_writable(&self) -> Result<()> {
@@ -50,10 +74,13 @@ impl WorkspaceFs {
         fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))
     }
 
-    pub fn read_bytes(&self, relative: impl AsRef<Path>, max_bytes: u64) -> Result<Vec<u8>> {
-        let path = self.resolve_existing(relative.as_ref())?;
+    pub fn read_bytes(&self, requested: impl AsRef<Path>, max_bytes: u64) -> Result<Vec<u8>> {
+        let path = self.resolve_user_read_path(requested)?;
         let metadata =
             fs::metadata(&path).with_context(|| format!("failed to inspect {}", path.display()))?;
+        if !metadata.is_file() {
+            bail!("{} is not a file", path.display());
+        }
         if metadata.len() > max_bytes {
             bail!(
                 "{} is too large ({} bytes; limit is {} bytes)",
@@ -75,10 +102,21 @@ impl WorkspaceFs {
         }
 
         let path = self.resolve_for_write(relative.as_ref())?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
+        self.create_parent(&path)?;
+        fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))
+    }
+
+    pub fn write_bytes(&self, relative: impl AsRef<Path>, content: &[u8]) -> Result<()> {
+        self.require_write()?;
+        if content.len() > MAX_BINARY_WRITE_BYTES {
+            bail!(
+                "refusing one binary write larger than {} bytes",
+                MAX_BINARY_WRITE_BYTES
+            );
         }
+
+        let path = self.resolve_for_write(relative.as_ref())?;
+        self.create_parent(&path)?;
         fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))
     }
 
@@ -112,6 +150,14 @@ impl WorkspaceFs {
         fs::remove_file(&path).with_context(|| format!("failed to delete {}", path.display()))
     }
 
+    fn create_parent(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        Ok(())
+    }
+
     fn require_write(&self) -> Result<()> {
         if self.mode == PermissionMode::ReadOnly {
             bail!("Roldex is in read-only mode");
@@ -124,7 +170,7 @@ impl WorkspaceFs {
             bail!("path cannot be empty");
         }
         if relative.is_absolute() {
-            bail!("absolute paths are not allowed in workspace tools");
+            bail!("absolute paths are not allowed in workspace mutation tools");
         }
         if relative.components().any(|component| {
             matches!(
@@ -203,6 +249,17 @@ mod tests {
         fs::create_dir_all(&root).expect("create root");
         let workspace = WorkspaceFs::new(&root, PermissionMode::Workspace).expect("workspace");
         assert!(workspace.read_text("../secret.txt").is_err());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn absolute_reads_are_allowed_inside_workspace() {
+        let root = test_dir("absolute-read");
+        fs::create_dir_all(&root).expect("create root");
+        let image = root.join("shot.png");
+        fs::write(&image, b"png").expect("seed image");
+        let workspace = WorkspaceFs::new(&root, PermissionMode::Workspace).expect("workspace");
+        assert_eq!(workspace.read_bytes(&image, 32).expect("read"), b"png");
         fs::remove_dir_all(root).expect("cleanup");
     }
 

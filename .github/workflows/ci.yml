@@ -20,9 +20,18 @@ jobs:
       - name: Format
         if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
-      - name: Studio plugin static checks
+      - name: Studio plugin static checks (Linux)
         if: runner.os == 'Linux'
         run: python3 scripts/check-studio-plugin.py
+      - name: Studio plugin static checks (Windows)
+        if: runner.os == 'Windows'
+        run: python scripts/check-studio-plugin.py
+      - name: Parse Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          [scriptblock]::Create((Get-Content -Raw scripts/install.ps1)) | Out-Null
+          Write-Host "Windows installer syntax parsed successfully"
       - name: Check
         run: cargo check --workspace --all-targets
       - name: Test

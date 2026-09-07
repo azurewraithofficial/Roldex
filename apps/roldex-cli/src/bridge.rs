@@ -102,7 +102,9 @@ async fn handle_connection(
             let enriched = build_studio_prompt(payload)?;
             let answer = {
                 let mut agent = agent.lock().await;
-                agent.chat_with_tools(&enriched, fs.as_ref(), |_| {}).await?
+                agent
+                    .chat_with_tools(&enriched, fs.as_ref(), |_| {})
+                    .await?
             };
 
             write_json(
@@ -171,7 +173,10 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest> {
     let mut buffer = Vec::with_capacity(4096);
     let header_end = loop {
         let mut chunk = [0u8; 4096];
-        let read = stream.read(&mut chunk).await.context("failed to read HTTP request")?;
+        let read = stream
+            .read(&mut chunk)
+            .await
+            .context("failed to read HTTP request")?;
         if read == 0 {
             bail!("Studio bridge connection closed before a complete request arrived");
         }
@@ -194,8 +199,14 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest> {
     let mut lines = headers.split("\r\n");
     let request_line = lines.next().context("missing HTTP request line")?;
     let mut request_parts = request_line.split_whitespace();
-    let method = request_parts.next().context("missing HTTP method")?.to_owned();
-    let path = request_parts.next().context("missing HTTP path")?.to_owned();
+    let method = request_parts
+        .next()
+        .context("missing HTTP method")?
+        .to_owned();
+    let path = request_parts
+        .next()
+        .context("missing HTTP path")?
+        .to_owned();
 
     let mut content_length = 0usize;
     let mut bridge_header = false;
@@ -224,7 +235,10 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest> {
     while buffer.len() < body_start + content_length {
         let remaining = body_start + content_length - buffer.len();
         let mut chunk = vec![0u8; remaining.min(8192)];
-        let read = stream.read(&mut chunk).await.context("failed to read HTTP body")?;
+        let read = stream
+            .read(&mut chunk)
+            .await
+            .context("failed to read HTTP body")?;
         if read == 0 {
             bail!("Studio bridge connection closed during request body");
         }
@@ -263,7 +277,10 @@ async fn write_json(
         .write_all(&body)
         .await
         .context("failed to write Studio bridge body")?;
-    stream.shutdown().await.context("failed to close Studio bridge response")
+    stream
+        .shutdown()
+        .await
+        .context("failed to close Studio bridge response")
 }
 
 fn truncate_chars(value: &str, max_chars: usize) -> String {
@@ -282,7 +299,10 @@ mod tests {
 
     #[test]
     fn finds_http_header_boundary() {
-        assert_eq!(find_header_end(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"), Some(23));
+        assert_eq!(
+            find_header_end(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+            Some(23)
+        );
     }
 
     #[test]

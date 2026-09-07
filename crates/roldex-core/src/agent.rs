@@ -232,7 +232,8 @@ impl Agent {
                 let execution = if tool_name == "web_research" {
                     self.execute_web_research(&call.function.arguments).await
                 } else if tool_name == "analyze_image" {
-                    self.execute_image_analysis(&call.function.arguments, fs).await
+                    self.execute_image_analysis(&call.function.arguments, fs)
+                        .await
                 } else if let Some(execution) =
                     crate::studio::execute_tool(&call, self.studio.as_ref(), fs).await
                 {
@@ -282,12 +283,19 @@ impl Agent {
         let event = AgentEvent::UsingTool("Live web research".into());
         let parsed = serde_json::from_str::<WebResearchArgs>(arguments);
         let output = match parsed {
-            Ok(args) if !args.query.trim().is_empty() => match self.provider.web_research(&args.query).await {
-                Ok(report) => json!({ "ok": true, "report": report }).to_string(),
-                Err(error) => json!({ "ok": false, "error": error.to_string() }).to_string(),
-            },
-            Ok(_) => json!({ "ok": false, "error": "web_research query cannot be empty" }).to_string(),
-            Err(error) => json!({ "ok": false, "error": format!("invalid web_research arguments: {error}") }).to_string(),
+            Ok(args) if !args.query.trim().is_empty() => {
+                match self.provider.web_research(&args.query).await {
+                    Ok(report) => json!({ "ok": true, "report": report }).to_string(),
+                    Err(error) => json!({ "ok": false, "error": error.to_string() }).to_string(),
+                }
+            }
+            Ok(_) => {
+                json!({ "ok": false, "error": "web_research query cannot be empty" }).to_string()
+            }
+            Err(error) => {
+                json!({ "ok": false, "error": format!("invalid web_research arguments: {error}") })
+                    .to_string()
+            }
         };
         ToolExecution { event, output }
     }
@@ -310,8 +318,13 @@ impl Agent {
                     Err(error) => json!({ "ok": false, "error": error.to_string() }).to_string(),
                 }
             }
-            Ok(_) => json!({ "ok": false, "error": "analyze_image path cannot be empty" }).to_string(),
-            Err(error) => json!({ "ok": false, "error": format!("invalid analyze_image arguments: {error}") }).to_string(),
+            Ok(_) => {
+                json!({ "ok": false, "error": "analyze_image path cannot be empty" }).to_string()
+            }
+            Err(error) => {
+                json!({ "ok": false, "error": format!("invalid analyze_image arguments: {error}") })
+                    .to_string()
+            }
         };
         ToolExecution { event, output }
     }
@@ -325,7 +338,7 @@ impl Agent {
         let data_url = self.image_data_url(path, fs)?;
         let messages = vec![
             ChatMessage::system(
-                "You are Roldex Visual QA, a Roblox Studio/game screenshot reviewer. Inspect only what the image supports. Focus on usability, readability, map composition, scale, UI responsiveness/clipping, lighting, visual hierarchy, gameplay readability and whether the requested visible behavior appears to have occurred. Be concrete and concise. Do not claim runtime correctness from pixels alone."
+                "You are Roldex Visual QA, a Roblox Studio/game screenshot reviewer. Inspect only what the image supports. Focus on usability, readability, map composition, scale, UI responsiveness/clipping, lighting, visual hierarchy, gameplay readability and whether the requested visible behavior appears to have occurred. Be concrete and concise. Do not claim runtime correctness from pixels alone.",
             ),
             ChatMessage::user_with_images(prompt, vec![data_url]),
         ];
@@ -344,7 +357,10 @@ impl Agent {
         if bytes.is_empty() {
             bail!("image file is empty: {image_path}");
         }
-        Ok(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
+        Ok(format!(
+            "data:{mime};base64,{}",
+            STANDARD.encode(bytes)
+        ))
     }
 
     fn remember(&mut self, input: &str, answer: &str) {

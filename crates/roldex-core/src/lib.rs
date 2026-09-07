@@ -1,6 +1,7 @@
 mod agent;
 mod analysis;
 mod config;
+mod docs;
 mod git;
 mod project;
 mod prompt;

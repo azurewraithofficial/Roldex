@@ -30,6 +30,13 @@ struct WebResearchArgs {
     query: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct AnalyzeImageArgs {
+    path: String,
+    #[serde(default)]
+    prompt: Option<String>,
+}
+
 pub struct Agent {
     provider: OpenAiCompatibleProvider,
     project: ProjectSummary,
@@ -98,12 +105,7 @@ impl Agent {
 
         let mut data_urls = Vec::with_capacity(image_paths.len());
         for image_path in image_paths {
-            let mime = image_mime(image_path)?;
-            let bytes = fs.read_bytes(image_path, MAX_IMAGE_BYTES)?;
-            if bytes.is_empty() {
-                bail!("image file is empty: {image_path}");
-            }
-            data_urls.push(format!("data:{mime};base64,{}", STANDARD.encode(bytes)));
+            data_urls.push(self.image_data_url(image_path, fs)?);
         }
 
         self.run_turn(
@@ -142,6 +144,22 @@ impl Agent {
                         "query": { "type": "string" }
                     },
                     "required": ["query"],
+                    "additionalProperties": false
+                }
+            }
+        }));
+        tools.push(json!({
+            "type": "function",
+            "function": {
+                "name": "analyze_image",
+                "description": "Use the vision model to inspect an existing local image. After studio_capture_view or a studio_test that returned a capture path, use this to visually QA the map, UI, lighting, composition, scale, readability, clipping, obvious layout/collision cues, and the visible result of tested interactions. Distinguish visible evidence from inference.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "prompt": { "type": "string" }
+                    },
+                    "required": ["path"],
                     "additionalProperties": false
                 }
             }
@@ -192,7 +210,7 @@ impl Agent {
                     messages.push(ChatMessage::assistant(answer));
                     messages.push(ChatMessage::system(match verification_scope {
                         VerificationScope::Files => "You changed files/assets but have not verified the latest mutation yet. Before finishing, inspect the resulting file/diff/analysis or run an appropriate local check. If verification fails, repair and verify again.",
-                        VerificationScope::Studio => "You changed live Roblox Studio state but have not verified the latest mutation yet. Before finishing, inspect the resulting Instances/properties with studio_query and/or run studio_test when runtime behavior matters. For visual work, capture/analyze the resulting viewport when that capability is available. Repair any problem and verify again.",
+                        VerificationScope::Studio => "You changed live Roblox Studio state but have not verified the latest mutation yet. Before finishing, inspect the resulting Instances/properties with studio_query and/or run studio_test when runtime behavior matters. For visual work, capture the viewport with studio_capture_view and analyze the saved PNG with analyze_image. Repair any problem and verify again.",
                         VerificationScope::None => unreachable!(),
                     }));
                     continue;
@@ -213,8 +231,10 @@ impl Agent {
                 let tool_name = call.function.name.clone();
                 let execution = if tool_name == "web_research" {
                     self.execute_web_research(&call.function.arguments).await
+                } else if tool_name == "analyze_image" {
+                    self.execute_image_analysis(&call.function.arguments, fs).await
                 } else if let Some(execution) =
-                    crate::studio::execute_tool(&call, self.studio.as_ref()).await
+                    crate::studio::execute_tool(&call, self.studio.as_ref(), fs).await
                 {
                     execution
                 } else if let Some(execution) = crate::computer::execute_tool(&call, fs).await {
@@ -235,8 +255,11 @@ impl Agent {
                 if succeeded {
                     if let Some(scope) = mutation_scope(&tool_name) {
                         verification_scope = scope;
-                    } else if verification_satisfies(&tool_name, verification_scope, &execution.output)
-                    {
+                    } else if verification_satisfies(
+                        &tool_name,
+                        verification_scope,
+                        &execution.output,
+                    ) {
                         verification_scope = VerificationScope::None;
                     }
                 }
@@ -269,6 +292,61 @@ impl Agent {
         ToolExecution { event, output }
     }
 
+    async fn execute_image_analysis(&self, arguments: &str, fs: &WorkspaceFs) -> ToolExecution {
+        let event = AgentEvent::UsingTool("Visual QA with vision model".into());
+        let parsed = serde_json::from_str::<AnalyzeImageArgs>(arguments);
+        let output = match parsed {
+            Ok(args) if !args.path.trim().is_empty() => {
+                let prompt = args.prompt.unwrap_or_else(|| {
+                    "Visually inspect this Roblox Studio/game screenshot as QA. Report what is actually visible, then identify concrete issues in map composition, scale, navigation readability, UI layout/clipping, lighting, visual hierarchy, obvious misplaced objects, and the visible result of the current test. Distinguish visible evidence from inference. If it looks good, say what was verified rather than inventing problems.".into()
+                });
+                match self.analyze_local_image(&args.path, &prompt, fs).await {
+                    Ok(analysis) => json!({
+                        "ok": true,
+                        "path": args.path,
+                        "analysis": analysis
+                    })
+                    .to_string(),
+                    Err(error) => json!({ "ok": false, "error": error.to_string() }).to_string(),
+                }
+            }
+            Ok(_) => json!({ "ok": false, "error": "analyze_image path cannot be empty" }).to_string(),
+            Err(error) => json!({ "ok": false, "error": format!("invalid analyze_image arguments: {error}") }).to_string(),
+        };
+        ToolExecution { event, output }
+    }
+
+    async fn analyze_local_image(
+        &self,
+        path: &str,
+        prompt: &str,
+        fs: &WorkspaceFs,
+    ) -> Result<String> {
+        let data_url = self.image_data_url(path, fs)?;
+        let messages = vec![
+            ChatMessage::system(
+                "You are Roldex Visual QA, a Roblox Studio/game screenshot reviewer. Inspect only what the image supports. Focus on usability, readability, map composition, scale, UI responsiveness/clipping, lighting, visual hierarchy, gameplay readability and whether the requested visible behavior appears to have occurred. Be concrete and concise. Do not claim runtime correctness from pixels alone."
+            ),
+            ChatMessage::user_with_images(prompt, vec![data_url]),
+        ];
+        let turn = self.provider.chat(&messages, &[]).await?;
+        if !turn.tool_calls.is_empty() {
+            bail!("visual QA unexpectedly returned tool calls")
+        }
+        turn.content
+            .filter(|content| !content.trim().is_empty())
+            .context("visual QA returned an empty result")
+    }
+
+    fn image_data_url(&self, image_path: &str, fs: &WorkspaceFs) -> Result<String> {
+        let mime = image_mime(image_path)?;
+        let bytes = fs.read_bytes(image_path, MAX_IMAGE_BYTES)?;
+        if bytes.is_empty() {
+            bail!("image file is empty: {image_path}");
+        }
+        Ok(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
+    }
+
     fn remember(&mut self, input: &str, answer: &str) {
         self.history.push(ChatMessage::user(input));
         self.history.push(ChatMessage::assistant(answer));
@@ -283,7 +361,7 @@ impl Agent {
 
 fn should_run_originality_research(input: &str) -> bool {
     let lower = input.to_ascii_lowercase();
-    [
+    let strong_greenfield = [
         "game concept",
         "game idea",
         "new game",
@@ -295,20 +373,24 @@ fn should_run_originality_research(input: &str) -> bool {
         "game name",
         "name my game",
         "call the game",
-        "called ",
-        "named ",
     ]
     .iter()
-    .any(|needle| lower.contains(needle))
+    .any(|needle| lower.contains(needle));
+    let named_game = (lower.contains("called ") || lower.contains("named "))
+        && (lower.contains("game") || lower.contains("experience"));
+    strong_greenfield || named_game
 }
 
 fn mutation_scope(tool_name: &str) -> Option<VerificationScope> {
     match tool_name {
         "studio_batch" | "studio_undo" | "studio_redo" => Some(VerificationScope::Studio),
-        "write_file" | "replace_in_file" | "delete_file" | "git_restore_file"
-        | "generate_image" | "generate_voice_audio" | "repair_studio_plugin" => {
-            Some(VerificationScope::Files)
-        }
+        "write_file"
+        | "replace_in_file"
+        | "delete_file"
+        | "git_restore_file"
+        | "generate_image"
+        | "generate_voice_audio"
+        | "repair_studio_plugin" => Some(VerificationScope::Files),
         _ => None,
     }
 }
@@ -323,6 +405,7 @@ fn verification_satisfies(tool_name: &str, scope: VerificationScope, output: &st
         VerificationScope::Studio => match tool_name {
             "studio_query" => true,
             "studio_test" => output.contains("\"error_count\":0"),
+            "analyze_image" => output.contains(".roldex/captures/studio-"),
             _ => false,
         },
     }
@@ -381,11 +464,19 @@ mod tests {
 
     #[test]
     fn studio_mutations_require_studio_verification() {
-        assert_eq!(mutation_scope("studio_batch"), Some(VerificationScope::Studio));
+        assert_eq!(
+            mutation_scope("studio_batch"),
+            Some(VerificationScope::Studio)
+        );
         assert!(verification_satisfies(
             "studio_query",
             VerificationScope::Studio,
             "{\"ok\":true}"
+        ));
+        assert!(verification_satisfies(
+            "analyze_image",
+            VerificationScope::Studio,
+            "{\"ok\":true,\"path\":\".roldex/captures/studio-1.png\"}"
         ));
         assert!(!verification_satisfies(
             "file_info",
@@ -403,7 +494,7 @@ mod tests {
             "I have a new game concept about collecting anomalies"
         ));
         assert!(!should_run_originality_research(
-            "Fix the datastore bug in my existing project"
+            "Fix the function called saveProfile in my existing project"
         ));
     }
 }

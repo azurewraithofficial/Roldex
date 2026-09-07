@@ -9,6 +9,7 @@ mod project_intel;
 mod prompt;
 mod provider;
 mod search;
+mod studio;
 mod tools;
 mod workspace_fs;
 
@@ -17,5 +18,6 @@ pub use analysis::{FindingSeverity, LuauAnalysisReport, LuauFinding, analyze_lua
 pub use config::{AiConfig, Config, PermissionConfig, PermissionMode, UiConfig};
 pub use project::{ProjectKind, ProjectSummary, project_tree};
 pub use provider::ToolCall;
+pub use studio::{StudioBroker, StudioCommand, StudioCommandResult};
 pub use tools::AgentEvent;
 pub use workspace_fs::WorkspaceFs;

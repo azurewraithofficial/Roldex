@@ -110,18 +110,19 @@ async fn execute_page(call: &ToolCall) -> ToolExecution {
     match parsed {
         Ok(args) => {
             let event = AgentEvent::UsingTool(format!("Roblox docs page: {}", args.path));
-            let output = match fetch_page(&args.path, args.max_chars.unwrap_or(DEFAULT_PAGE_CHARS)).await {
-                Ok((url, content, truncated)) => json!({
-                    "ok": true,
-                    "source": "Roblox Creator Hub",
-                    "path": args.path,
-                    "url": url,
-                    "truncated": truncated,
-                    "content": content
-                })
-                .to_string(),
-                Err(error) => error_output(error),
-            };
+            let output =
+                match fetch_page(&args.path, args.max_chars.unwrap_or(DEFAULT_PAGE_CHARS)).await {
+                    Ok((url, content, truncated)) => json!({
+                        "ok": true,
+                        "source": "Roblox Creator Hub",
+                        "path": args.path,
+                        "url": url,
+                        "truncated": truncated,
+                        "content": content
+                    })
+                    .to_string(),
+                    Err(error) => error_output(error),
+                };
             ToolExecution { event, output }
         }
         Err(error) => ToolExecution {
@@ -144,9 +145,15 @@ async fn search_docs(query: &str, max_results: usize) -> Result<Vec<DocsHit>> {
         .await
         .context("failed to reach Roblox Creator Hub docs index")?;
     if !response.status().is_success() {
-        bail!("Roblox Creator Hub docs index returned HTTP {}", response.status());
+        bail!(
+            "Roblox Creator Hub docs index returned HTTP {}",
+            response.status()
+        );
     }
-    if response.content_length().is_some_and(|length| length > MAX_INDEX_BYTES) {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_INDEX_BYTES)
+    {
         bail!("Roblox docs index exceeded the configured size limit");
     }
 
@@ -188,7 +195,10 @@ async fn fetch_page(path: &str, max_chars: usize) -> Result<(String, String, boo
         .await
         .with_context(|| format!("failed to reach Roblox Creator Hub page {normalized}"))?;
     if !response.status().is_success() {
-        bail!("Roblox Creator Hub page returned HTTP {}", response.status());
+        bail!(
+            "Roblox Creator Hub page returned HTTP {}",
+            response.status()
+        );
     }
 
     let text = response

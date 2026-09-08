@@ -81,7 +81,7 @@ impl Agent {
     ) -> Result<String>
     where
         F: FnMut(AgentEvent),
-        S: FnMut(Option<&str>),
+        S: FnMut(Option<&str>) + Send,
     {
         self.run_turn(
             input,
@@ -149,7 +149,7 @@ impl Agent {
     ) -> Result<String>
     where
         F: FnMut(AgentEvent),
-        S: FnMut(Option<&str>),
+        S: FnMut(Option<&str>) + Send,
     {
         if image_paths.is_empty() {
             return self
@@ -181,7 +181,7 @@ impl Agent {
         user_message: ChatMessage,
         fs: &WorkspaceFs,
         mut on_event: F,
-        mut on_stream: Option<&mut dyn FnMut(Option<&str>)>,
+        mut on_stream: Option<&mut (dyn FnMut(Option<&str>) + Send)>,
     ) -> Result<String>
     where
         F: FnMut(AgentEvent),

@@ -9,8 +9,7 @@ pub struct PluginSyncReport {
 }
 
 #[cfg(windows)]
-const MAIN_PLUGIN: &str =
-    include_str!("../../../plugins/roldex-studio/RoldexStudio.plugin.lua");
+const MAIN_PLUGIN: &str = include_str!("../../../plugins/roldex-studio/RoldexStudio.plugin.lua");
 #[cfg(windows)]
 const RUNTIME_PLUGIN: &str =
     include_str!("../../../plugins/roldex-studio/RoldexStudioRuntime.plugin.lua");

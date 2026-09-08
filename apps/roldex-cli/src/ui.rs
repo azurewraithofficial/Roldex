@@ -61,6 +61,13 @@ enum WorkerUpdate {
         id: u64,
         text: String,
     },
+    StreamDelta {
+        id: u64,
+        text: String,
+    },
+    StreamReset {
+        id: u64,
+    },
     Done {
         id: u64,
         result: std::result::Result<String, String>,
@@ -70,6 +77,7 @@ enum WorkerUpdate {
 struct AppState {
     input: String,
     log: Vec<LogEntry>,
+    draft_response: String,
     busy: bool,
     status: String,
     started_at: Option<Instant>,
@@ -91,6 +99,7 @@ impl AppState {
                     context.config.permissions.mode
                 ),
             }],
+            draft_response: String::new(),
             busy: false,
             status: "Ready".into(),
             started_at: None,
@@ -115,6 +124,7 @@ impl AppState {
         if let Some(handle) = worker.take() {
             handle.abort();
         }
+        self.draft_response.clear();
         self.busy = false;
         self.active_id = None;
         self.started_at = None;
@@ -203,10 +213,19 @@ pub async fn run(context: UiContext) -> Result<()> {
                     WorkerUpdate::Progress { id, text } if state.active_id == Some(id) => {
                         state.status = compact_status(&text);
                     }
+                    WorkerUpdate::StreamDelta { id, text } if state.active_id == Some(id) => {
+                        state.draft_response.push_str(&text);
+                        state.status = "Responding…".into();
+                    }
+                    WorkerUpdate::StreamReset { id } if state.active_id == Some(id) => {
+                        state.draft_response.clear();
+                        state.status = "Working…".into();
+                    }
                     WorkerUpdate::Done { id, result } if state.active_id == Some(id) => {
                         state.busy = false;
                         state.active_id = None;
                         state.started_at = None;
+                        state.draft_response.clear();
                         worker = None;
                         match result {
                             Ok(answer) => {
@@ -252,6 +271,7 @@ pub async fn run(context: UiContext) -> Result<()> {
                                     break;
                                 }
                                 state.push(LogKind::User, input.clone());
+                                state.draft_response.clear();
                                 state.busy = true;
                                 state.status = "Thinking…".into();
                                 state.started_at = Some(Instant::now());
@@ -278,9 +298,7 @@ pub async fn run(context: UiContext) -> Result<()> {
                         }
                     }
                     Event::Paste(text) if !state.busy => {
-                        state
-                            .input
-                            .push_str(&text.replace('\r', " ").replace('\n', " "));
+                        state.input.push_str(&text.replace(['\r', '\n'], " "));
                     }
                     _ => {}
                 }
@@ -301,7 +319,8 @@ fn spawn_agent_request(
     let fs = Arc::clone(&context.fs);
     tokio::spawn(async move {
         let image_paths = intent::detect_image_paths(&input, fs.as_ref());
-        let progress_tx = updates.clone();
+        let event_updates = updates.clone();
+        let stream_updates = updates.clone();
         let result = {
             let mut agent = agent.lock().await;
             if let Some(arguments) = input.strip_prefix("/image ") {
@@ -312,31 +331,79 @@ fn spawn_agent_request(
                         "Analyze this Roblox Studio screenshot or image and fix or improve the relevant project problem.",
                     ),
                 };
+                let paths = vec![path.to_string()];
                 agent
-                    .chat_with_image(prompt, path, fs.as_ref(), move |event| {
-                        let _ = progress_tx.send(WorkerUpdate::Progress {
-                            id,
-                            text: event.to_string(),
-                        });
-                    })
+                    .chat_with_images_streaming(
+                        prompt,
+                        &paths,
+                        fs.as_ref(),
+                        move |event| {
+                            let _ = event_updates.send(WorkerUpdate::Progress {
+                                id,
+                                text: event.to_string(),
+                            });
+                        },
+                        move |delta| match delta {
+                            Some(text) => {
+                                let _ = stream_updates.send(WorkerUpdate::StreamDelta {
+                                    id,
+                                    text: text.to_string(),
+                                });
+                            }
+                            None => {
+                                let _ = stream_updates.send(WorkerUpdate::StreamReset { id });
+                            }
+                        },
+                    )
                     .await
             } else if image_paths.is_empty() {
                 agent
-                    .chat_with_tools(&input, fs.as_ref(), move |event| {
-                        let _ = progress_tx.send(WorkerUpdate::Progress {
-                            id,
-                            text: event.to_string(),
-                        });
-                    })
+                    .chat_with_tools_streaming(
+                        &input,
+                        fs.as_ref(),
+                        move |event| {
+                            let _ = event_updates.send(WorkerUpdate::Progress {
+                                id,
+                                text: event.to_string(),
+                            });
+                        },
+                        move |delta| match delta {
+                            Some(text) => {
+                                let _ = stream_updates.send(WorkerUpdate::StreamDelta {
+                                    id,
+                                    text: text.to_string(),
+                                });
+                            }
+                            None => {
+                                let _ = stream_updates.send(WorkerUpdate::StreamReset { id });
+                            }
+                        },
+                    )
                     .await
             } else {
                 agent
-                    .chat_with_images(&input, &image_paths, fs.as_ref(), move |event| {
-                        let _ = progress_tx.send(WorkerUpdate::Progress {
-                            id,
-                            text: event.to_string(),
-                        });
-                    })
+                    .chat_with_images_streaming(
+                        &input,
+                        &image_paths,
+                        fs.as_ref(),
+                        move |event| {
+                            let _ = event_updates.send(WorkerUpdate::Progress {
+                                id,
+                                text: event.to_string(),
+                            });
+                        },
+                        move |delta| match delta {
+                            Some(text) => {
+                                let _ = stream_updates.send(WorkerUpdate::StreamDelta {
+                                    id,
+                                    text: text.to_string(),
+                                });
+                            }
+                            None => {
+                                let _ = stream_updates.send(WorkerUpdate::StreamReset { id });
+                            }
+                        },
+                    )
                     .await
             }
         };
@@ -353,6 +420,7 @@ fn handle_local_command(input: &str, context: &UiContext, state: &mut AppState) 
         "/quit" | "/exit" => return Ok(true),
         "/clear" => {
             state.log.clear();
+            state.draft_response.clear();
             state.status = "Cleared".into();
         }
         "/help" => state.push(LogKind::System, help_text()),
@@ -531,7 +599,22 @@ fn draw(
             chunks[0],
         );
 
-        let body_lines = render_log(&state.log);
+        let mut body_lines = render_log(&state.log);
+        if !state.draft_response.is_empty() {
+            if !body_lines.is_empty() {
+                body_lines.push(Line::raw(""));
+            }
+            body_lines.push(Line::from(Span::styled(
+                "roldex",
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            for raw in state.draft_response.lines() {
+                body_lines.push(Line::from(Span::raw(raw.to_string())));
+            }
+        }
+
         let visible_height = chunks[1].height.saturating_sub(1) as usize;
         let scroll = body_lines.len().saturating_sub(visible_height) as u16;
         frame.render_widget(

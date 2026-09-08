@@ -1,5 +1,6 @@
 mod bridge;
 mod intent;
+mod plugin_sync;
 #[cfg_attr(not(windows), allow(unused_mut))]
 #[allow(clippy::collapsible_str_replace)]
 mod ui;
@@ -36,11 +37,34 @@ struct Cli {
     /// Disable the localhost Roblox Studio bridge.
     #[arg(long)]
     no_studio_bridge: bool,
+
+    /// Reinstall both bundled Roldex Studio plugins, then exit.
+    #[arg(long)]
+    repair_studio_plugin: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if cli.repair_studio_plugin {
+        let report = plugin_sync::repair_plugins()?;
+        if report.paths.is_empty() {
+            println!("Automatic Studio plugin repair is currently available on Windows.");
+        } else {
+            for path in report.paths {
+                println!("Repaired {}", path.display());
+            }
+            println!("Restart Roblox Studio so the repaired plugins reload.");
+        }
+        return Ok(());
+    }
+
+    let plugin_sync = plugin_sync::sync_plugins()?;
+    if plugin_sync.changed {
+        eprintln!("Roldex Studio plugins were refreshed. Restart Studio if it is already open.");
+    }
+
     let root = cli
         .root
         .canonicalize()

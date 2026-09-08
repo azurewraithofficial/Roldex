@@ -226,6 +226,9 @@ impl Agent {
 
         let mut messages = Vec::with_capacity(self.history.len() + 24);
         messages.push(ChatMessage::system(ROBLOX_SYSTEM_PROMPT));
+        messages.push(ChatMessage::system(
+            "During multi-step work, keep the user visibly informed with brief progress updates before major tool phases and after meaningful discoveries or repairs. Report actions and results only; do not expose private chain-of-thought or hidden reasoning. Keep each update concise so it does not slow the task down."
+        ));
         messages.push(ChatMessage::system(format!(
             "Current project context:\n{}\nFilesystem permission mode: {}",
             self.project.describe(),
@@ -255,6 +258,7 @@ impl Agent {
         messages.push(user_message);
 
         let mut verification_scope = VerificationScope::None;
+        let mut progress_updates = Vec::<String>::new();
         const MAX_TOOL_STEPS: usize = 96;
         for _ in 0..MAX_TOOL_STEPS {
             let turn = if let Some(stream) = on_stream.as_deref_mut() {
@@ -272,8 +276,9 @@ impl Agent {
                     .context("AI provider returned an empty final response")?;
 
                 if verification_scope != VerificationScope::None {
+                    progress_updates.push(answer.clone());
                     if let Some(stream) = on_stream.as_deref_mut() {
-                        stream(None);
+                        stream(Some("\n\n"));
                     }
                     messages.push(ChatMessage::assistant(answer));
                     messages.push(ChatMessage::system(match verification_scope {
@@ -285,16 +290,22 @@ impl Agent {
                 }
 
                 self.remember(memory_input, &answer);
-                return Ok(answer);
+                if progress_updates.is_empty() {
+                    return Ok(answer);
+                }
+                progress_updates.push(answer);
+                return Ok(progress_updates.join("\n\n"));
             }
 
-            if turn
+            if let Some(content) = turn
                 .content
                 .as_deref()
-                .is_some_and(|content| !content.trim().is_empty())
+                .map(str::trim)
+                .filter(|content| !content.is_empty())
             {
+                progress_updates.push(content.to_string());
                 if let Some(stream) = on_stream.as_deref_mut() {
-                    stream(None);
+                    stream(Some("\n\n"));
                 }
             }
 

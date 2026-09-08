@@ -72,7 +72,7 @@ impl Default for AiConfig {
         Self {
             provider: "openrouter".into(),
             endpoint: "https://openrouter.ai/api/v1/chat/completions".into(),
-            model: "poolside/laguna-s-2.1:free".into(),
+            model: "openrouter/free".into(),
             api_key_env: "OPENROUTER_API_KEY".into(),
             temperature: 0.2,
             request_timeout_seconds: 75,
@@ -128,10 +128,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_are_workspace_scoped_and_low_latency_free_model_first() {
+    fn defaults_are_workspace_scoped_and_free_router_first() {
         let config = Config::default();
         assert_eq!(config.permissions.mode, PermissionMode::Workspace);
-        assert_eq!(config.ai.model, "poolside/laguna-s-2.1:free");
+        assert_eq!(config.ai.model, "openrouter/free");
         assert_eq!(config.ai.request_timeout_seconds, 75);
         assert_eq!(config.ai.max_retries, 2);
         assert_eq!(config.ai.openrouter_sort, "latency");

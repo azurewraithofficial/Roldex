@@ -16,7 +16,7 @@ use crate::tools::{AgentEvent, ToolExecution, execute_tool, tool_definitions};
 
 const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_IMAGES_PER_TURN: usize = 4;
-const MAX_PROJECT_INSTRUCTIONS_CHARS: usize = 24_000;
+const MAX_PROJECT_INSTRUCTIONS_CHARS: usize = 12_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VerificationScope {
@@ -68,8 +68,29 @@ impl Agent {
     where
         F: FnMut(AgentEvent),
     {
-        self.run_turn(input, ChatMessage::user(input), fs, on_event)
+        self.run_turn(input, ChatMessage::user(input), fs, on_event, None)
             .await
+    }
+
+    pub async fn chat_with_tools_streaming<F, S>(
+        &mut self,
+        input: &str,
+        fs: &WorkspaceFs,
+        on_event: F,
+        mut on_stream: S,
+    ) -> Result<String>
+    where
+        F: FnMut(AgentEvent),
+        S: FnMut(Option<&str>),
+    {
+        self.run_turn(
+            input,
+            ChatMessage::user(input),
+            fs,
+            on_event,
+            Some(&mut on_stream),
+        )
+        .await
     }
 
     pub async fn chat_with_image<F>(
@@ -113,6 +134,43 @@ impl Agent {
             ChatMessage::user_with_images(input, data_urls),
             fs,
             on_event,
+            None,
+        )
+        .await
+    }
+
+    pub async fn chat_with_images_streaming<F, S>(
+        &mut self,
+        input: &str,
+        image_paths: &[String],
+        fs: &WorkspaceFs,
+        on_event: F,
+        mut on_stream: S,
+    ) -> Result<String>
+    where
+        F: FnMut(AgentEvent),
+        S: FnMut(Option<&str>),
+    {
+        if image_paths.is_empty() {
+            return self
+                .chat_with_tools_streaming(input, fs, on_event, on_stream)
+                .await;
+        }
+        if image_paths.len() > MAX_IMAGES_PER_TURN {
+            bail!("at most {MAX_IMAGES_PER_TURN} images can be attached to one turn");
+        }
+
+        let mut data_urls = Vec::with_capacity(image_paths.len());
+        for image_path in image_paths {
+            data_urls.push(self.image_data_url(image_path, fs)?);
+        }
+
+        self.run_turn(
+            input,
+            ChatMessage::user_with_images(input, data_urls),
+            fs,
+            on_event,
+            Some(&mut on_stream),
         )
         .await
     }
@@ -123,6 +181,7 @@ impl Agent {
         user_message: ChatMessage,
         fs: &WorkspaceFs,
         mut on_event: F,
+        mut on_stream: Option<&mut dyn FnMut(Option<&str>)>,
     ) -> Result<String>
     where
         F: FnMut(AgentEvent),
@@ -198,7 +257,13 @@ impl Agent {
         let mut verification_scope = VerificationScope::None;
         const MAX_TOOL_STEPS: usize = 96;
         for _ in 0..MAX_TOOL_STEPS {
-            let turn = self.provider.chat(&messages, &tools).await?;
+            let turn = if let Some(stream) = on_stream.as_deref_mut() {
+                self.provider
+                    .chat_stream(&messages, &tools, |delta| stream(Some(delta)))
+                    .await?
+            } else {
+                self.provider.chat(&messages, &tools).await?
+            };
 
             if turn.tool_calls.is_empty() {
                 let answer = turn
@@ -207,6 +272,9 @@ impl Agent {
                     .context("AI provider returned an empty final response")?;
 
                 if verification_scope != VerificationScope::None {
+                    if let Some(stream) = on_stream.as_deref_mut() {
+                        stream(None);
+                    }
                     messages.push(ChatMessage::assistant(answer));
                     messages.push(ChatMessage::system(match verification_scope {
                         VerificationScope::Files => "You changed files/assets but have not verified the latest mutation yet. Before finishing, inspect the resulting file/diff/analysis or run an appropriate local check. If verification fails, repair and verify again.",
@@ -218,6 +286,16 @@ impl Agent {
 
                 self.remember(memory_input, &answer);
                 return Ok(answer);
+            }
+
+            if turn
+                .content
+                .as_deref()
+                .is_some_and(|content| !content.trim().is_empty())
+            {
+                if let Some(stream) = on_stream.as_deref_mut() {
+                    stream(None);
+                }
             }
 
             let tool_calls = turn.tool_calls;
@@ -364,7 +442,7 @@ impl Agent {
         self.history.push(ChatMessage::user(input));
         self.history.push(ChatMessage::assistant(answer));
 
-        const MAX_HISTORY_MESSAGES: usize = 32;
+        const MAX_HISTORY_MESSAGES: usize = 16;
         if self.history.len() > MAX_HISTORY_MESSAGES {
             let remove = self.history.len() - MAX_HISTORY_MESSAGES;
             self.history.drain(0..remove);

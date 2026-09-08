@@ -232,8 +232,7 @@ impl OpenAiCompatibleProvider {
             };
             Some(json!({
                 "sort": sort,
-                "allow_fallbacks": true,
-                "require_parameters": true
+                "allow_fallbacks": true
             }))
         } else {
             None

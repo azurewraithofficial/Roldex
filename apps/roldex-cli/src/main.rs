@@ -10,7 +10,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use roldex_core::{Agent, Config, PermissionMode, ProjectSummary, StudioBroker, WorkspaceFs};
+use roldex_core::{
+    Agent, Config, DEFAULT_LOCAL_AI_ENDPOINT, DEFAULT_LOCAL_AI_MODEL, PermissionMode,
+    ProjectSummary, StudioBroker, WorkspaceFs,
+};
 use tokio::sync::Mutex;
 
 const DEFAULT_STUDIO_PORT: u16 = 38247;
@@ -29,6 +32,18 @@ struct Cli {
     /// Allow Roldex file/process tools to access paths outside the active project when required by the task.
     #[arg(long)]
     full_access: bool,
+
+    /// Use a keyless local OpenAI-compatible model server instead of the cloud provider.
+    #[arg(long)]
+    local_ai: bool,
+
+    /// Local OpenAI-compatible chat-completions endpoint. Implies --local-ai.
+    #[arg(long, value_name = "URL")]
+    local_endpoint: Option<String>,
+
+    /// Model name sent to the local server. Implies --local-ai.
+    #[arg(long, value_name = "MODEL")]
+    local_model: Option<String>,
 
     /// Localhost port used by the Roldex Studio plugin.
     #[arg(long, default_value_t = DEFAULT_STUDIO_PORT)]
@@ -73,6 +88,19 @@ async fn main() -> Result<()> {
     let mut config = Config::load(cli.config.as_deref())?;
     if cli.full_access {
         config.permissions.mode = PermissionMode::FullAccess;
+    }
+
+    if cli.local_ai || cli.local_endpoint.is_some() || cli.local_model.is_some() {
+        config.ai.activate_local(
+            cli.local_endpoint.as_deref(),
+            cli.local_model.as_deref(),
+        );
+        if cli.local_endpoint.is_none() {
+            config.ai.endpoint = DEFAULT_LOCAL_AI_ENDPOINT.into();
+        }
+        if cli.local_model.is_none() {
+            config.ai.model = DEFAULT_LOCAL_AI_MODEL.into();
+        }
     }
 
     // Project detection is deliberately bounded so Roldex stays responsive even when

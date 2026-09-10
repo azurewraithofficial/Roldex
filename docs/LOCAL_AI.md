@@ -2,7 +2,7 @@
 
 Roldex can use a locally hosted OpenAI-compatible model server instead of OpenRouter. The intended runtime is `llama.cpp` (`llama-server`), but any compatible local server may be used.
 
-Local mode is designed for users who want to avoid provider request quotas and per-request API charges. It does not make compute unlimited: model size, RAM, VRAM, CPU/GPU speed, storage, and power remain physical constraints.
+Local mode is designed for users who want to avoid provider request quotas and per-request API charges. It does not make compute physically unlimited: model size, RAM, VRAM, CPU/GPU speed, storage, and power remain constraints.
 
 ## Architecture
 
@@ -22,7 +22,7 @@ local GGUF coding model
 Roldex CLI <-> localhost Studio bridge <-> Roblox Studio plugins
 ```
 
-The same Roldex Roblox system prompt, filesystem tools, shell tools, Git tools, Studio bridge, test loop, screenshots, progress updates, and repair logic remain in use. Local mode changes the inference provider; it does not create a separate reduced-capability chatbot.
+The same Roldex Roblox system prompt, filesystem tools, shell tools, Git tools, Studio bridge, test loop, progress updates, and repair logic remain in use. Local mode changes the inference provider; it does not create a separate reduced-capability chatbot.
 
 ## GitHub intentionally does not contain model weights
 
@@ -40,6 +40,43 @@ E:\RoldexAI\
 ```
 
 The drive letter is not significant. An internal SSD, external SSD, external HDD, or sufficiently fast USB storage can all be used for storage. Runtime speed still depends mainly on the computer's RAM/VRAM/CPU/GPU once the model is loaded.
+
+## Install the local runtime on Windows
+
+Roldex includes `scripts/install-local-runtime.ps1`. It dynamically discovers the current `ggml-org/llama.cpp` release and downloads a matching Windows runtime rather than hardcoding one build number.
+
+Default CPU runtime:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-local-runtime.ps1
+```
+
+Install the runtime onto another drive:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-local-runtime.ps1 `
+  -InstallDir "E:\RoldexAI\llama.cpp"
+```
+
+Supported backend choices:
+
+```text
+cpu      broadest compatibility
+gulkan   not a valid value
+vulkan   hardware-accelerated Vulkan build
+cuda12   NVIDIA CUDA 12.x build
+cuda13   NVIDIA CUDA 13.x build
+```
+
+Example:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-local-runtime.ps1 `
+  -InstallDir "E:\RoldexAI\llama.cpp" `
+  -Backend vulkan
+```
+
+The installer verifies the GitHub-provided SHA256 digest when one is present, extracts the runtime, finds `llama-server.exe`, stores runtime metadata, and sets the user-level `ROLDEX_LLAMA_SERVER` path. It does **not** download model weights.
 
 ## Start an existing local server
 
@@ -82,12 +119,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-local-ai.ps1 `
 The script:
 
 1. validates the model and server paths;
-2. binds the model server to `127.0.0.1` only;
-3. enables llama.cpp Jinja chat templates for tool/function calling;
-4. starts the server with a configurable context size and GPU-layer setting;
-5. waits for the public llama.cpp `/health` endpoint;
-6. configures Roldex local mode for the current PowerShell process;
-7. optionally launches Roldex.
+2. safely handles Windows paths containing spaces;
+3. binds the model server to `127.0.0.1` only;
+4. enables llama.cpp Jinja chat templates for tool/function calling;
+5. starts the server with a configurable context size and GPU-layer setting;
+6. waits for the public llama.cpp `/health` endpoint;
+7. configures Roldex local mode for the current PowerShell process;
+8. optionally launches Roldex.
 
 Useful parameters:
 
@@ -101,6 +139,28 @@ Useful parameters:
 -LaunchRoldex     launch Roldex after the server is healthy
 -FullAccess       pass --full-access to Roldex
 ```
+
+Current llama.cpp supports `auto` for `--n-gpu-layers`, so the launcher can let llama.cpp decide how much to offload unless the user explicitly supplies another value.
+
+## Validate a model before using it for Roldex
+
+A model being able to chat does not mean it can reliably drive an agent. Roldex includes `scripts/test-local-ai.ps1` to check the core protocol before a model is trusted with Studio/files.
+
+With the default local server:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-local-ai.ps1
+```
+
+The smoke test verifies:
+
+- the local `/health` endpoint;
+- a normal chat-completions request;
+- response latency;
+- an OpenAI-style function/tool call;
+- that the requested probe tool is actually selected.
+
+If tool calling fails, the model is not considered suitable as Roldex's main agent model even if plain chat works.
 
 ## Environment configuration
 
@@ -123,6 +183,7 @@ ROLDEX_MODEL
 ROLDEX_API_KEY_ENV
 ROLDEX_AI_TIMEOUT_SECONDS
 ROLDEX_OPENROUTER_SORT
+ROLDEX_LLAMA_SERVER
 ```
 
 ## Candidate open models
@@ -135,7 +196,7 @@ Candidates to evaluate include:
 - OpenAI gpt-oss-20b
 - other GGUF models with strong coding and tool/function-calling behavior
 
-Do not select a model by benchmark score alone. Roldex should evaluate each candidate on Roblox-specific tasks: Luau correctness, Roblox API knowledge, tool-call reliability, multi-step repair, Studio command planning, security rules, and latency on the target PC.
+Do not select a model by benchmark score alone. Roldex should evaluate each candidate on Roblox-specific tasks: Luau correctness, Roblox API knowledge, tool-call reliability, multi-step repair, Studio command planning, security rules, latency, and memory use on the target PC.
 
 ## Roblox specialization
 
@@ -156,12 +217,30 @@ Future specialization can add Roblox-focused RAG and a LoRA/fine-tuned adapter w
 
 A local text-only model does not automatically gain live web search or image understanding. Roldex must not pretend otherwise.
 
-The architecture should treat these as optional capabilities:
+The agent tool catalog is capability-aware: OpenRouter-specific web research is not advertised to a local provider. Greenfield originality work in local-only mode is marked as lacking live market research instead of fabricating a search.
 
-- local coding/text inference: no provider quota;
+The architecture treats these as separate optional capabilities:
+
+- local coding/text inference: no provider request quota;
 - local vision model: optional, when configured;
 - live web research: optional external network capability;
 - cloud provider: optional fallback, never required for local text inference.
+
+## Diagnostics
+
+Inside Roldex:
+
+```text
+/doctor
+```
+
+Local mode reports the configured provider, model and endpoint and correctly displays:
+
+```text
+AI key: not required
+```
+
+It also reports the Studio bridge/plugin state and normal local development prerequisites.
 
 ## Security
 
@@ -169,6 +248,7 @@ The architecture should treat these as optional capabilities:
 - Local mode does not require `OPENROUTER_API_KEY`.
 - Full filesystem access remains opt-in through `--full-access`.
 - Roblox Studio continues to communicate with Roldex through its separate loopback bridge on port 38247 by default.
+- Model/runtime binaries are ignored by Git to avoid accidental giant commits.
 
 ## Upstream projects evaluated
 

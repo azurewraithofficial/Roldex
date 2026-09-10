@@ -62,7 +62,6 @@ Supported backend choices:
 
 ```text
 cpu      broadest compatibility
-gulkan   not a valid value
 vulkan   hardware-accelerated Vulkan build
 cuda12   NVIDIA CUDA 12.x build
 cuda13   NVIDIA CUDA 13.x build
@@ -140,7 +139,7 @@ Useful parameters:
 -FullAccess       pass --full-access to Roldex
 ```
 
-Current llama.cpp supports `auto` for `--n-gpu-layers`, so the launcher can let llama.cpp decide how much to offload unless the user explicitly supplies another value.
+Current llama.cpp supports `auto` for `--n-gpu-layers`, and `-a` / `--alias` for API model aliases, so the launcher can let llama.cpp choose offload automatically while exposing a stable `roldex-local` model name to Roldex.
 
 ## Validate a model before using it for Roldex
 

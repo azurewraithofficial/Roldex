@@ -55,6 +55,24 @@ This removes OpenRouter request/day limits from text/coding inference performed 
 
 Large model files are intentionally not bundled in GitHub or in the normal Roldex installer.
 
+### Install only the local runtime
+
+You can prepare `llama.cpp` before choosing/downloading a model:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-local-runtime.ps1
+```
+
+The runtime can also live on another drive:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-local-runtime.ps1 `
+  -InstallDir "E:\RoldexAI\llama.cpp" `
+  -Backend cpu
+```
+
+Supported backends are `cpu`, `vulkan`, `cuda12`, and `cuda13`. The installer dynamically discovers a current Windows `llama.cpp` runtime from its GitHub releases, verifies the GitHub-provided SHA256 digest when available, handles the matching CUDA companion runtime for CUDA builds, and sets `ROLDEX_LLAMA_SERVER`. It **does not download any model weights**.
+
 ### If a local server is already running
 
 Default endpoint:
@@ -91,7 +109,17 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-local-ai.ps1 `
   -FullAccess
 ```
 
-The drive letter can be changed freely. The script validates the paths, starts a loopback-only model server, waits for its `/health` endpoint, configures Roldex local mode, and optionally launches Roldex.
+The drive letter can be changed freely. The script validates the paths, safely handles paths containing spaces, starts a loopback-only model server, enables the llama.cpp Jinja/tool-call path, waits for `/health`, configures Roldex local mode, and optionally launches Roldex.
+
+### Validate the chosen model
+
+Before trusting a model with Roldex tools/Studio:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-local-ai.ps1
+```
+
+This checks server health, normal chat, response timing, and an actual OpenAI-style function/tool call. A model that can chat but cannot reliably call tools is not suitable as Roldex's main agent model.
 
 Full details: **[docs/LOCAL_AI.md](docs/LOCAL_AI.md)**.
 
@@ -117,6 +145,7 @@ ROLDEX_MODEL
 ROLDEX_API_KEY_ENV
 ROLDEX_AI_TIMEOUT_SECONDS
 ROLDEX_OPENROUTER_SORT
+ROLDEX_LLAMA_SERVER
 ```
 
 For local mode:
@@ -180,7 +209,7 @@ Then start Roldex and run:
 /doctor
 ```
 
-`/doctor` checks the project, AI/provider setup, Git availability, Studio bridge, and Studio plugin installation.
+`/doctor` checks the project, AI/provider setup, Git availability, Studio bridge, and Studio plugin installation. In local mode it shows the configured endpoint/model and `AI key: not required`.
 
 ## No Git clone / low-disk fallback
 

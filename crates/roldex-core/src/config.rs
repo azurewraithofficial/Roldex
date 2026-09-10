@@ -34,9 +34,7 @@ impl Config {
             Self::default()
         };
 
-        if env::var("ROLDEX_AI_MODE")
-            .is_ok_and(|mode| mode.trim().eq_ignore_ascii_case("local"))
-        {
+        if env::var("ROLDEX_AI_MODE").is_ok_and(|mode| mode.trim().eq_ignore_ascii_case("local")) {
             config.ai.activate_local(None, None);
         }
 
@@ -203,10 +201,7 @@ mod tests {
             Some("http://127.0.0.1:9000/v1/chat/completions"),
             Some("qwen3-coder"),
         );
-        assert_eq!(
-            ai.endpoint,
-            "http://127.0.0.1:9000/v1/chat/completions"
-        );
+        assert_eq!(ai.endpoint, "http://127.0.0.1:9000/v1/chat/completions");
         assert_eq!(ai.model, "qwen3-coder");
     }
 }

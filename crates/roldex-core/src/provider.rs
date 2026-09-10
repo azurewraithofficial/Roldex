@@ -271,7 +271,9 @@ impl OpenAiCompatibleProvider {
             provider: provider_preferences.as_ref(),
         };
 
-        let body = self.send_json_request(&api_key, &request).await?;
+        let body = self
+            .send_json_request(api_key.as_deref(), &request)
+            .await?;
         let parsed: ChatResponse = serde_json::from_str(&body).with_context(|| {
             format!(
                 "could not parse AI provider response: {}",
@@ -322,12 +324,14 @@ impl OpenAiCompatibleProvider {
             let mut builder = self
                 .client
                 .post(&self.config.endpoint)
-                .bearer_auth(&api_key)
                 .timeout(Duration::from_secs(
-                    self.config.request_timeout_seconds.clamp(15, 300),
+                    self.config.request_timeout_seconds.clamp(15, 600),
                 ))
                 .json(&request);
 
+            if let Some(api_key) = api_key.as_deref() {
+                builder = builder.bearer_auth(api_key);
+            }
             if self.config.provider == "openrouter" {
                 builder = builder.header("X-OpenRouter-Title", "Roldex");
             }
@@ -342,8 +346,16 @@ impl OpenAiCompatibleProvider {
                     if error.is_timeout() {
                         bail!(
                             "AI provider request timed out after {} seconds",
-                            self.config.request_timeout_seconds.clamp(15, 300)
+                            self.config.request_timeout_seconds.clamp(15, 600)
                         );
+                    }
+                    if self.config.is_local() {
+                        return Err(error).with_context(|| {
+                            format!(
+                                "could not reach the local AI server at {}. Start llama-server or another OpenAI-compatible local server first",
+                                self.config.endpoint
+                            )
+                        });
                     }
                     return Err(error).context("failed to reach AI provider");
                 }
@@ -491,23 +503,31 @@ impl OpenAiCompatibleProvider {
     }
 
     fn ensure_supported_provider(&self) -> Result<()> {
-        if self.config.provider != "openrouter" && self.config.provider != "openai-compatible" {
+        if self.config.provider != "openrouter"
+            && self.config.provider != "openai-compatible"
+            && self.config.provider != "local"
+        {
             bail!(
-                "unsupported provider '{}'; v0.1 supports openrouter/openai-compatible endpoints",
+                "unsupported provider '{}'; v0.1 supports openrouter, openai-compatible, and local endpoints",
                 self.config.provider
             );
         }
         Ok(())
     }
 
-    fn api_key(&self) -> Result<String> {
+    fn api_key(&self) -> Result<Option<String>> {
         self.ensure_supported_provider()?;
-        env::var(&self.config.api_key_env).with_context(|| {
-            format!(
-                "missing API key environment variable {}",
-                self.config.api_key_env
-            )
-        })
+        if !self.config.requires_api_key() {
+            return Ok(None);
+        }
+        env::var(&self.config.api_key_env)
+            .map(Some)
+            .with_context(|| {
+                format!(
+                    "missing API key environment variable {}",
+                    self.config.api_key_env
+                )
+            })
     }
 
     fn provider_preferences(&self) -> Option<Value> {
@@ -524,19 +544,25 @@ impl OpenAiCompatibleProvider {
         }))
     }
 
-    async fn send_json_request(&self, api_key: &str, request: &ChatRequest<'_>) -> Result<String> {
+    async fn send_json_request(
+        &self,
+        api_key: Option<&str>,
+        request: &ChatRequest<'_>,
+    ) -> Result<String> {
         self.ensure_supported_provider()?;
         let retries = self.config.max_retries.min(4);
         for attempt in 0..=retries {
             let mut builder = self
                 .client
                 .post(&self.config.endpoint)
-                .bearer_auth(api_key)
                 .timeout(Duration::from_secs(
-                    self.config.request_timeout_seconds.clamp(15, 300),
+                    self.config.request_timeout_seconds.clamp(15, 600),
                 ))
                 .json(request);
 
+            if let Some(api_key) = api_key {
+                builder = builder.bearer_auth(api_key);
+            }
             if self.config.provider == "openrouter" {
                 builder = builder.header("X-OpenRouter-Title", "Roldex");
             }
@@ -551,8 +577,16 @@ impl OpenAiCompatibleProvider {
                     if error.is_timeout() {
                         bail!(
                             "AI provider request timed out after {} seconds",
-                            self.config.request_timeout_seconds.clamp(15, 300)
+                            self.config.request_timeout_seconds.clamp(15, 600)
                         );
+                    }
+                    if self.config.is_local() {
+                        return Err(error).with_context(|| {
+                            format!(
+                                "could not reach the local AI server at {}. Start llama-server or another OpenAI-compatible local server first",
+                                self.config.endpoint
+                            )
+                        });
                     }
                     return Err(error).context("failed to reach AI provider");
                 }

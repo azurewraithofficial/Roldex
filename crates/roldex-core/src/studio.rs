@@ -3,24 +3,35 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Result, bail};
-#[cfg(windows)]
-use anyhow::Context;
 #[cfg(windows)]
 use std::{env, fs, path::PathBuf};
+
+#[cfg(windows)]
+use anyhow::Context;
+use anyhow::{Result, bail};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::sync::{Mutex, oneshot};
 use tokio::time::timeout;
 
-use crate::ToolCall;
 use crate::tools::{AgentEvent, ToolExecution};
+use crate::{ToolCall, WorkspaceFs};
 
 const STUDIO_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const STUDIO_CONNECTED_WINDOW_SECS: u64 = 5;
 const MAX_QUEUE: usize = 128;
+const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
+const TEST_CAPTURE_MARKER: &str = ".roldex/last-test-captures.json";
+const TEST_CAPTURE_PREFIX: &str = ".roldex/captures/test-";
+
 #[cfg(windows)]
-const EMBEDDED_PLUGIN: &str = include_str!("../../../plugins/roldex-studio/RoldexStudio.plugin.lua");
+const EMBEDDED_PLUGIN: &str =
+    include_str!("../../../plugins/roldex-studio/RoldexStudio.plugin.lua");
+#[cfg(windows)]
+const EMBEDDED_RUNTIME_PLUGIN: &str =
+    include_str!("../../../plugins/roldex-studio/RoldexStudioRuntime.plugin.lua");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StudioCommand {
@@ -39,8 +50,15 @@ pub struct StudioCommandResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct TestCaptureMarker {
+    #[serde(default)]
+    paths: Vec<String>,
+}
+
 struct BrokerInner {
-    queue: Mutex<VecDeque<StudioCommand>>,
+    main_queue: Mutex<VecDeque<StudioCommand>>,
+    runtime_queue: Mutex<VecDeque<StudioCommand>>,
     pending: Mutex<HashMap<String, oneshot::Sender<StudioCommandResult>>>,
     next_id: AtomicU64,
     last_seen: AtomicU64,
@@ -61,7 +79,8 @@ impl StudioBroker {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(BrokerInner {
-                queue: Mutex::new(VecDeque::new()),
+                main_queue: Mutex::new(VecDeque::new()),
+                runtime_queue: Mutex::new(VecDeque::new()),
                 pending: Mutex::new(HashMap::new()),
                 next_id: AtomicU64::new(1),
                 last_seen: AtomicU64::new(0),
@@ -74,8 +93,8 @@ impl StudioBroker {
     }
 
     pub fn is_connected(&self) -> bool {
-        let last = self.inner.last_seen.load(Ordering::Relaxed);
-        last != 0 && now_secs().saturating_sub(last) <= STUDIO_CONNECTED_WINDOW_SECS
+        let last_seen = self.inner.last_seen.load(Ordering::Relaxed);
+        last_seen != 0 && now_secs().saturating_sub(last_seen) <= STUDIO_CONNECTED_WINDOW_SECS
     }
 
     pub async fn pending_count(&self) -> usize {
@@ -84,32 +103,37 @@ impl StudioBroker {
 
     pub async fn poll(&self, max_commands: usize) -> Vec<StudioCommand> {
         self.mark_seen();
-        let mut queue = self.inner.queue.lock().await;
-        let max_commands = max_commands.clamp(1, 16);
-        let mut commands = Vec::with_capacity(max_commands.min(queue.len()));
-        for _ in 0..max_commands {
-            let Some(command) = queue.pop_front() else {
-                break;
-            };
-            commands.push(command);
-        }
-        commands
+        drain_queue(&self.inner.main_queue, max_commands).await
+    }
+
+    pub async fn poll_runtime(&self, max_commands: usize) -> Vec<StudioCommand> {
+        self.mark_seen();
+        drain_queue(&self.inner.runtime_queue, max_commands).await
     }
 
     pub async fn complete(&self, result: StudioCommandResult) -> bool {
         self.mark_seen();
-        let sender = self.inner.pending.lock().await.remove(&result.id);
-        sender.is_some_and(|sender| sender.send(result).is_ok())
+        self.inner
+            .pending
+            .lock()
+            .await
+            .remove(&result.id)
+            .is_some_and(|sender| sender.send(result).is_ok())
     }
 
-    async fn submit(&self, action: &str, payload: Value) -> Result<StudioCommandResult> {
+    pub async fn submit_action(&self, action: &str, payload: Value) -> Result<StudioCommandResult> {
         if !self.is_connected() {
             bail!(
-                "Roldex Studio plugin is not connected. Try repair_studio_plugin, then re-check Studio connectivity. If Studio already has the plugin open, it may need a restart to reload repaired plugin code."
+                "Roldex Studio plugins are not connected. Try repair_studio_plugin, then re-check Studio connectivity. If Studio is already open, restart it so repaired plugin code reloads."
             );
         }
 
-        if self.inner.queue.lock().await.len() >= MAX_QUEUE {
+        let queue = if is_runtime_action(action) {
+            &self.inner.runtime_queue
+        } else {
+            &self.inner.main_queue
+        };
+        if queue.lock().await.len() >= MAX_QUEUE {
             bail!("Studio command queue is full; wait for the plugin to catch up");
         }
 
@@ -117,15 +141,15 @@ impl StudioBroker {
             "studio-{}",
             self.inner.next_id.fetch_add(1, Ordering::Relaxed)
         );
-        let (tx, rx) = oneshot::channel();
-        self.inner.pending.lock().await.insert(id.clone(), tx);
-        self.inner.queue.lock().await.push_back(StudioCommand {
+        let (sender, receiver) = oneshot::channel();
+        self.inner.pending.lock().await.insert(id.clone(), sender);
+        queue.lock().await.push_back(StudioCommand {
             id: id.clone(),
             action: action.to_owned(),
             payload,
         });
 
-        match timeout(STUDIO_COMMAND_TIMEOUT, rx).await {
+        match timeout(STUDIO_COMMAND_TIMEOUT, receiver).await {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => {
                 self.inner.pending.lock().await.remove(&id);
@@ -134,7 +158,7 @@ impl StudioBroker {
             Err(_) => {
                 self.inner.pending.lock().await.remove(&id);
                 bail!(
-                    "Studio command timed out after {} seconds. The plugin may be busy, disconnected, playtesting, or blocked by a Studio permission/prompt.",
+                    "Studio command timed out after {} seconds. Studio may be busy, disconnected, playtesting, or waiting for a permission prompt.",
                     STUDIO_COMMAND_TIMEOUT.as_secs()
                 )
             }
@@ -142,114 +166,239 @@ impl StudioBroker {
     }
 }
 
+async fn drain_queue(
+    queue: &Mutex<VecDeque<StudioCommand>>,
+    max_commands: usize,
+) -> Vec<StudioCommand> {
+    let mut queue = queue.lock().await;
+    let count = max_commands.clamp(1, 16);
+    let mut commands = Vec::with_capacity(count.min(queue.len()));
+    for _ in 0..count {
+        let Some(command) = queue.pop_front() else {
+            break;
+        };
+        commands.push(command);
+    }
+    commands
+}
+
+fn is_runtime_action(action: &str) -> bool {
+    matches!(
+        action,
+        "capture" | "scenario_test" | "input" | "device" | "reflect"
+    )
+}
+
 pub fn tool_definitions() -> Vec<Value> {
     vec![
-        json!({
-            "type": "function",
-            "function": {
-                "name": "studio_health",
-                "description": "Check whether the Roldex Studio plugin is actively connected and polling for commands.",
-                "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": "studio_query",
-                "description": "Read live Roblox Studio state through the connected plugin. Operations: selection, inspect, children, find. For inspect/children provide path. For find provide optional root_path, name_contains, class_name, and max_results. Paths use Roblox full names such as Workspace.Map.Door or ReplicatedStorage.Remotes.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "operation": { "type": "string", "enum": ["selection", "inspect", "children", "find"] },
-                        "path": { "type": "string" },
-                        "root_path": { "type": "string" },
-                        "name_contains": { "type": "string" },
-                        "class_name": { "type": "string" },
-                        "properties": { "type": "array", "items": { "type": "string" }, "maxItems": 80 },
-                        "max_results": { "type": "integer", "minimum": 1, "maximum": 100 }
-                    },
-                    "required": ["operation"],
-                    "additionalProperties": false
-                }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": "studio_batch",
-                "description": "Apply an atomic, undoable batch of Roblox Studio changes. Changes execute one action at a time in Studio so the user can watch Roldex build in real time. Prefer this tool and real Instances over generating one-off builder scripts. Supported action op values: create, set_properties, set_attributes, move, clone, delete, update_script, select, add_tag, remove_tag, pivot_to, terrain_fill_block, terrain_fill_ball, terrain_clear. A create/clone action may include ref so later actions can target '$ref'. Property values may be primitives or typed objects using $type: Vector3{x,y,z}, Vector2{x,y}, Color3{r,g,b}, UDim{scale,offset}, UDim2{x_scale,x_offset,y_scale,y_offset}, CFrame{components:[12 numbers]}, Enum{enum_type,item}, BrickColor{name}, NumberRange{min,max}, Rect{min_x,min_y,max_x,max_y}, Instance{path}. For scripts, create can include source or update_script can replace source through ScriptEditorService. Keep live_delay_ms around 30-80 for visible builds and lower it only for very large repetitive batches. Verify important changes afterward with studio_query.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "label": { "type": "string", "description": "Short undo-history label" },
-                        "live_delay_ms": { "type": "integer", "minimum": 0, "maximum": 500 },
-                        "highlight_created": { "type": "boolean" },
-                        "actions": {
-                            "type": "array",
-                            "minItems": 1,
-                            "maxItems": 100,
-                            "items": { "type": "object", "additionalProperties": true }
-                        }
-                    },
-                    "required": ["actions"],
-                    "additionalProperties": false
-                }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": "studio_test",
-                "description": "Run an automated Roblox Studio smoke/play/multiplayer test and collect Studio output. Use after meaningful code, map, UI, gameplay, networking, or spawn changes. Modes: run, play, multiplayer. Tests are automatically bounded by timeout_seconds; multiplayer supports 1-8 players. Treat output errors/warnings as signals to inspect and repair before finishing.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "mode": { "type": "string", "enum": ["run", "play", "multiplayer"] },
-                        "players": { "type": "integer", "minimum": 1, "maximum": 8 },
-                        "timeout_seconds": { "type": "integer", "minimum": 2, "maximum": 60 },
-                        "args": {}
-                    },
-                    "required": ["mode"],
-                    "additionalProperties": false
-                }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": "studio_undo",
-                "description": "Undo the most recent Studio change using ChangeHistoryService. Use only when the task requires undoing a Studio mutation.",
-                "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": "studio_redo",
-                "description": "Redo the next Studio history action using ChangeHistoryService.",
-                "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": "repair_studio_plugin",
-                "description": "Repair/reinstall the local Roldex Studio plugin from the exact plugin source embedded in this Roldex build. Use automatically when Studio tools fail because the plugin is missing/corrupt on Windows. Studio may need to be restarted after repair so it reloads the plugin.",
-                "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
-            }
-        }),
+        function_tool(
+            "studio_health",
+            "Check whether Roldex Studio is actively connected.",
+            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+        ),
+        function_tool(
+            "studio_query",
+            "Read live Roblox Studio state. Operations: selection, inspect, children, find. Use before editing and after important changes.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "operation": { "type": "string", "enum": ["selection", "inspect", "children", "find"] },
+                    "path": { "type": "string" },
+                    "root_path": { "type": "string" },
+                    "name_contains": { "type": "string" },
+                    "class_name": { "type": "string" },
+                    "properties": { "type": "array", "items": { "type": "string" }, "maxItems": 80 },
+                    "max_results": { "type": "integer", "minimum": 1, "maximum": 100 }
+                },
+                "required": ["operation"],
+                "additionalProperties": false
+            }),
+        ),
+        function_tool(
+            "studio_batch",
+            "Apply an undoable batch of Studio changes one action at a time so the user can watch Roldex build. Prefer real Instances over one-off builder scripts. Supported ops include create, set_properties, set_attributes, move, clone, delete, update_script, select, tags, pivot, and terrain operations.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "label": { "type": "string" },
+                    "live_delay_ms": { "type": "integer", "minimum": 0, "maximum": 500 },
+                    "highlight_created": { "type": "boolean" },
+                    "actions": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "type": "object", "additionalProperties": true } }
+                },
+                "required": ["actions"],
+                "additionalProperties": false
+            }),
+        ),
+        function_tool(
+            "studio_capture_view",
+            "Capture the current Studio viewport as PNG for visual AI QA. The capture is saved under .roldex/captures for vision review.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "width": { "type": "integer", "minimum": 160, "maximum": 960 },
+                    "height": { "type": "integer", "minimum": 90, "maximum": 540 },
+                    "include_ui": { "type": "boolean" },
+                    "review_goal": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        function_tool(
+            "studio_device",
+            "Inspect or control Studio device simulation for responsive UI testing.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "operation": { "type": "string", "enum": ["status", "list", "set_device", "set_resolution", "set_orientation", "set_dpi", "set_scaling", "stop"] },
+                    "device_id": { "type": "string" },
+                    "width": { "type": "integer", "minimum": 1, "maximum": 7680 },
+                    "height": { "type": "integer", "minimum": 1, "maximum": 4320 },
+                    "orientation": { "type": "string", "enum": ["portrait", "landscape", "landscape_right"] },
+                    "dpi": { "type": "number", "minimum": 72, "maximum": 10000 },
+                    "scaling_mode": { "type": "string", "enum": ["fit", "actual", "physical"] }
+                },
+                "required": ["operation"],
+                "additionalProperties": false
+            }),
+        ),
+        function_tool(
+            "studio_input",
+            "Simulate bounded keyboard, mouse, pointer, and text input in an already-running Studio test for testing the experience's own controls.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "steps": { "type": "array", "maxItems": 80, "items": { "type": "object", "additionalProperties": true } }
+                },
+                "required": ["steps"],
+                "additionalProperties": false
+            }),
+        ),
+        function_tool(
+            "studio_test",
+            "Run a bounded Studio run, play, or multiplayer smoke test and collect Output.",
+            test_schema(false),
+        ),
+        function_tool(
+            "studio_scenario_test",
+            "Run a goal-driven end-to-end Studio playtest with simulated inputs and viewport capture checkpoints. Requires a concrete review_goal and success criteria. Supports UI/gameplay input plus temporary real TextChatService chat steps.",
+            test_schema(true),
+        ),
+        function_tool(
+            "studio_reflect",
+            "Inspect a Roblox class through Studio ReflectionService when dynamic engine API inspection helps.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "class_name": { "type": "string" },
+                    "include_properties": { "type": "boolean" },
+                    "include_methods": { "type": "boolean" },
+                    "include_events": { "type": "boolean" },
+                    "filter": { "type": "object", "additionalProperties": true }
+                },
+                "required": ["class_name"],
+                "additionalProperties": false
+            }),
+        ),
+        empty_tool("studio_undo", "Undo the most recent Studio change."),
+        empty_tool("studio_redo", "Redo the next Studio history action."),
+        empty_tool(
+            "repair_studio_plugin",
+            "Repair or reinstall both local Roldex Studio plugin files on Windows.",
+        ),
     ]
+}
+
+fn function_tool(name: &str, description: &str, parameters: Value) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": parameters
+        }
+    })
+}
+
+fn empty_tool(name: &str, description: &str) -> Value {
+    function_tool(
+        name,
+        description,
+        json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+    )
+}
+
+fn test_schema(with_scenario: bool) -> Value {
+    let mut properties = serde_json::Map::from_iter([
+        (
+            "mode".into(),
+            json!({ "type": "string", "enum": ["run", "play", "multiplayer"] }),
+        ),
+        (
+            "players".into(),
+            json!({ "type": "integer", "minimum": 1, "maximum": 8 }),
+        ),
+        (
+            "timeout_seconds".into(),
+            json!({ "type": "integer", "minimum": 2, "maximum": 60 }),
+        ),
+        ("args".into(), json!({})),
+    ]);
+    let mut required = vec!["mode"];
+    if with_scenario {
+        properties.extend([
+            (
+                "start_delay_seconds".into(),
+                json!({ "type": "number", "minimum": 0, "maximum": 10 }),
+            ),
+            ("capture_at_end".into(), json!({ "type": "boolean" })),
+            (
+                "capture_width".into(),
+                json!({ "type": "integer", "minimum": 160, "maximum": 960 }),
+            ),
+            (
+                "capture_height".into(),
+                json!({ "type": "integer", "minimum": 90, "maximum": 540 }),
+            ),
+            ("include_ui".into(), json!({ "type": "boolean" })),
+            ("review_goal".into(), json!({ "type": "string", "minLength": 8 })),
+            (
+                "success_criteria".into(),
+                json!({ "type": "array", "minItems": 1, "maxItems": 12, "items": { "type": "string", "minLength": 3 } }),
+            ),
+            (
+                "steps".into(),
+                json!({ "type": "array", "maxItems": 80, "items": { "type": "object", "additionalProperties": true } }),
+            ),
+        ]);
+        required.extend(["review_goal", "success_criteria"]);
+    }
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false
+    })
 }
 
 pub async fn execute_tool(
     call: &ToolCall,
     broker: Option<&StudioBroker>,
+    fs_scope: &WorkspaceFs,
 ) -> Option<ToolExecution> {
     match call.function.name.as_str() {
         "studio_health" => Some(execute_health(broker).await),
         "studio_query" => Some(execute_remote(call, broker, "query", "Studio query").await),
         "studio_batch" => Some(execute_remote(call, broker, "batch", "Studio live build").await),
+        "studio_capture_view" => Some(execute_capture(call, broker, fs_scope).await),
+        "studio_device" => {
+            Some(execute_remote(call, broker, "device", "Studio device simulation").await)
+        }
+        "studio_input" => Some(execute_remote(call, broker, "input", "Studio virtual input").await),
         "studio_test" => Some(execute_remote(call, broker, "test", "Studio playtest").await),
+        "studio_scenario_test" => Some(execute_scenario_test(call, broker, fs_scope).await),
+        "studio_reflect" => {
+            Some(execute_remote(call, broker, "reflect", "Studio API reflection").await)
+        }
         "studio_undo" => Some(execute_remote(call, broker, "undo", "Studio undo").await),
         "studio_redo" => Some(execute_remote(call, broker, "redo", "Studio redo").await),
         "repair_studio_plugin" => Some(execute_repair_plugin()),
@@ -258,14 +407,19 @@ pub async fn execute_tool(
 }
 
 async fn execute_health(broker: Option<&StudioBroker>) -> ToolExecution {
-    let (connected, pending) = if let Some(broker) = broker {
+    let (connected, pending_commands) = if let Some(broker) = broker {
         (broker.is_connected(), broker.pending_count().await)
     } else {
         (false, 0)
     };
     ToolExecution {
         event: AgentEvent::UsingTool("Studio health".into()),
-        output: json!({ "ok": true, "connected": connected, "pending_commands": pending }).to_string(),
+        output: json!({
+            "ok": true,
+            "connected": connected,
+            "pending_commands": pending_commands
+        })
+        .to_string(),
     }
 }
 
@@ -282,38 +436,252 @@ async fn execute_remote(
             output: error_output("Studio broker is not available in this Roldex session"),
         };
     };
-
-    let payload = if call.function.arguments.trim().is_empty() {
-        json!({})
-    } else {
-        match serde_json::from_str::<Value>(&call.function.arguments) {
-            Ok(value) => value,
-            Err(error) => {
-                return ToolExecution {
-                    event,
-                    output: error_output(format!("invalid {} arguments: {error}", call.function.name)),
-                };
-            }
+    let payload = match parse_payload(call) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return ToolExecution {
+                event,
+                output: error_output(error),
+            };
         }
     };
+    let output = result_json(broker.submit_action(action, payload).await);
+    ToolExecution { event, output }
+}
 
-    let output = match broker.submit(action, payload).await {
+async fn execute_capture(
+    call: &ToolCall,
+    broker: Option<&StudioBroker>,
+    fs_scope: &WorkspaceFs,
+) -> ToolExecution {
+    execute_capture_action(
+        call,
+        broker,
+        fs_scope,
+        "capture",
+        "Capturing Studio viewport",
+    )
+    .await
+}
+
+async fn execute_scenario_test(
+    call: &ToolCall,
+    broker: Option<&StudioBroker>,
+    fs_scope: &WorkspaceFs,
+) -> ToolExecution {
+    execute_capture_action(
+        call,
+        broker,
+        fs_scope,
+        "scenario_test",
+        "Studio visual scenario test",
+    )
+    .await
+}
+
+async fn execute_capture_action(
+    call: &ToolCall,
+    broker: Option<&StudioBroker>,
+    fs_scope: &WorkspaceFs,
+    action: &str,
+    event_name: &str,
+) -> ToolExecution {
+    let event = AgentEvent::UsingTool(event_name.into());
+    let Some(broker) = broker else {
+        return ToolExecution {
+            event,
+            output: error_output("Studio broker is not available"),
+        };
+    };
+    let payload = match parse_payload(call) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return ToolExecution {
+                event,
+                output: error_output(error),
+            };
+        }
+    };
+    let output = match broker.submit_action(action, payload).await {
+        Ok(mut result) => {
+            let is_scenario = action == "scenario_test";
+            match persist_captures_in_result(&mut result, fs_scope, is_scenario) {
+                Ok(paths) => {
+                    if is_scenario && result.ok && !paths.is_empty() {
+                        match rotate_test_captures(fs_scope, &paths) {
+                            Ok(retired) => {
+                                if let Some(Value::Object(output)) = result.output.as_mut() {
+                                    output.insert(
+                                        "retired_previous_capture_count".into(),
+                                        json!(retired),
+                                    );
+                                    output.insert(
+                                        "capture_retention".into(),
+                                        Value::String("latest_completed_scenario".into()),
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                return ToolExecution {
+                                    event,
+                                    output: error_output(format!(
+                                        "Studio scenario succeeded but test-capture rotation failed: {error}"
+                                    )),
+                                };
+                            }
+                        }
+                    }
+                    serde_json::to_string(&result)
+                        .unwrap_or_else(|error| error_output(error.to_string()))
+                }
+                Err(error) => error_output(error.to_string()),
+            }
+        }
+        Err(error) => error_output(error.to_string()),
+    };
+    ToolExecution { event, output }
+}
+
+fn result_json(result: Result<StudioCommandResult>) -> String {
+    match result {
         Ok(result) => serde_json::to_string(&result).unwrap_or_else(|error| {
             error_output(format!("failed to serialize Studio result: {error}"))
         }),
         Err(error) => error_output(error.to_string()),
+    }
+}
+
+fn parse_payload(call: &ToolCall) -> std::result::Result<Value, String> {
+    if call.function.arguments.trim().is_empty() {
+        Ok(json!({}))
+    } else {
+        serde_json::from_str::<Value>(&call.function.arguments)
+            .map_err(|error| format!("invalid {} arguments: {error}", call.function.name))
+    }
+}
+
+fn persist_captures_in_result(
+    result: &mut StudioCommandResult,
+    fs_scope: &WorkspaceFs,
+    scenario_test: bool,
+) -> Result<Vec<String>> {
+    let Some(Value::Object(output)) = result.output.as_mut() else {
+        return Ok(Vec::new());
+    };
+    let capture_group = now_millis();
+    let prefix = if scenario_test { "test" } else { "studio" };
+    let mut paths = Vec::new();
+    if let Some(path) =
+        persist_capture_object(output, fs_scope, prefix, capture_group, paths.len())?
+    {
+        paths.push(path);
+    }
+    if let Some(Value::Object(capture)) = output.get_mut("capture") {
+        if let Some(path) =
+            persist_capture_object(capture, fs_scope, prefix, capture_group, paths.len())?
+        {
+            paths.push(path);
+        }
+    }
+    if let Some(Value::Array(captures)) = output.get_mut("captures") {
+        for capture in captures.iter_mut().take(2) {
+            if let Value::Object(capture) = capture {
+                if let Some(path) =
+                    persist_capture_object(capture, fs_scope, prefix, capture_group, paths.len())?
+                {
+                    paths.push(path);
+                }
+            }
+        }
+    }
+    Ok(paths)
+}
+
+fn persist_capture_object(
+    object: &mut Map<String, Value>,
+    fs_scope: &WorkspaceFs,
+    prefix: &str,
+    capture_group: u128,
+    sequence: usize,
+) -> Result<Option<String>> {
+    let encoded = object
+        .remove("data_base64")
+        .or_else(|| object.remove("png_base64"));
+    let Some(Value::String(encoded)) = encoded else {
+        return Ok(None);
+    };
+    let bytes = STANDARD
+        .decode(encoded.as_bytes())
+        .map_err(|error| anyhow::anyhow!("Studio capture base64 was invalid: {error}"))?;
+    if bytes.is_empty() {
+        bail!("Studio capture returned an empty image");
+    }
+    if bytes.len() > MAX_CAPTURE_BYTES {
+        bail!("Studio capture exceeded the {MAX_CAPTURE_BYTES} byte local limit");
+    }
+
+    let relative_path = format!(".roldex/captures/{prefix}-{capture_group}-{sequence}.png");
+    fs_scope.write_bytes(&relative_path, &bytes)?;
+    object.insert("path".into(), Value::String(relative_path.clone()));
+    object.insert("bytes".into(), json!(bytes.len()));
+    Ok(Some(relative_path))
+}
+
+fn rotate_test_captures(fs_scope: &WorkspaceFs, current_paths: &[String]) -> Result<usize> {
+    if current_paths.is_empty() {
+        return Ok(0);
+    }
+    for path in current_paths {
+        if !is_safe_test_capture_path(path) {
+            bail!("refusing to record unsafe Studio test capture path: {path}");
+        }
+    }
+
+    let marker_path = fs_scope.root().join(TEST_CAPTURE_MARKER);
+    let previous = if marker_path.exists() {
+        let content = fs_scope.read_text(TEST_CAPTURE_MARKER)?;
+        serde_json::from_str::<TestCaptureMarker>(&content)
+            .map_err(|error| anyhow::anyhow!("invalid Roldex test-capture marker: {error}"))?
+    } else {
+        TestCaptureMarker::default()
     };
 
-    ToolExecution { event, output }
+    let mut retired = 0usize;
+    for path in previous.paths {
+        if !is_safe_test_capture_path(&path) || current_paths.iter().any(|current| current == &path)
+        {
+            continue;
+        }
+        let absolute = fs_scope.root().join(&path);
+        if absolute.exists() {
+            fs_scope.delete_file(&path)?;
+            retired += 1;
+        }
+    }
+
+    let marker = TestCaptureMarker {
+        paths: current_paths.to_vec(),
+    };
+    let marker_json = serde_json::to_string_pretty(&marker)
+        .map_err(|error| anyhow::anyhow!("failed to encode Roldex test-capture marker: {error}"))?;
+    fs_scope.write_text(TEST_CAPTURE_MARKER, &marker_json)?;
+    Ok(retired)
+}
+
+fn is_safe_test_capture_path(path: &str) -> bool {
+    path.starts_with(TEST_CAPTURE_PREFIX)
+        && path.ends_with(".png")
+        && !path.contains("..")
+        && !path.contains('\\')
 }
 
 fn execute_repair_plugin() -> ToolExecution {
     let event = AgentEvent::UsingTool("Studio plugin repair".into());
-    let output = match install_embedded_plugin() {
-        Ok(path) => json!({
+    let output = match install_embedded_plugins() {
+        Ok(paths) => json!({
             "ok": true,
-            "path": path,
-            "message": "Roldex Studio plugin source was repaired. If Studio is already open, restart Studio so it reloads the plugin."
+            "paths": paths,
+            "message": "Roldex Studio plugins were repaired. Restart Studio if it is already open."
         })
         .to_string(),
         Err(error) => error_output(error.to_string()),
@@ -321,7 +689,7 @@ fn execute_repair_plugin() -> ToolExecution {
     ToolExecution { event, output }
 }
 
-fn install_embedded_plugin() -> Result<String> {
+fn install_embedded_plugins() -> Result<Vec<String>> {
     #[cfg(windows)]
     {
         let local_app_data = env::var_os("LOCALAPPDATA")
@@ -330,15 +698,23 @@ fn install_embedded_plugin() -> Result<String> {
         let plugin_dir = local_app_data.join("Roblox").join("Plugins");
         fs::create_dir_all(&plugin_dir)
             .with_context(|| format!("failed to create {}", plugin_dir.display()))?;
-        let path = plugin_dir.join("RoldexStudio.plugin.lua");
-        fs::write(&path, EMBEDDED_PLUGIN)
-            .with_context(|| format!("failed to write {}", path.display()))?;
-        return Ok(path.display().to_string());
+        let main_path = plugin_dir.join("RoldexStudio.plugin.lua");
+        let runtime_path = plugin_dir.join("RoldexStudioRuntime.plugin.lua");
+        fs::write(&main_path, EMBEDDED_PLUGIN)
+            .with_context(|| format!("failed to write {}", main_path.display()))?;
+        fs::write(&runtime_path, EMBEDDED_RUNTIME_PLUGIN)
+            .with_context(|| format!("failed to write {}", runtime_path.display()))?;
+        return Ok(vec![
+            main_path.display().to_string(),
+            runtime_path.display().to_string(),
+        ]);
     }
 
     #[cfg(not(windows))]
     {
-        bail!("automatic Studio plugin repair is currently implemented for Windows; reinstall the plugin from the Roldex repository on this operating system")
+        bail!(
+            "automatic Studio plugin repair is currently implemented for Windows; reinstall the plugins from the Roldex repository on this operating system"
+        )
     }
 }
 
@@ -353,33 +729,172 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
     use super::*;
 
+    fn test_dir(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "roldex-studio-{label}-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
+    async fn wait_for_main_command(broker: &StudioBroker) -> StudioCommand {
+        for _ in 0..20 {
+            if let Some(command) = broker.poll(1).await.into_iter().next() {
+                return command;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("main Studio command was not enqueued")
+    }
+
+    async fn wait_for_runtime_command(broker: &StudioBroker) -> StudioCommand {
+        for _ in 0..20 {
+            if let Some(command) = broker.poll_runtime(1).await.into_iter().next() {
+                return command;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("runtime Studio command was not enqueued")
+    }
+
     #[tokio::test]
-    async fn broker_round_trip() {
+    async fn broker_routes_main_and_runtime_commands() {
         let broker = StudioBroker::new();
         broker.mark_seen();
-        let cloned = broker.clone();
-        let task = tokio::spawn(async move {
-            cloned
-                .submit("query", json!({"operation":"selection"}))
+
+        let main_broker = broker.clone();
+        let main_task = tokio::spawn(async move {
+            main_broker
+                .submit_action("query", json!({ "operation": "selection" }))
                 .await
         });
-        let commands = broker.poll(4).await;
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].action, "query");
+        let main_command = wait_for_main_command(&broker).await;
+        assert_eq!(main_command.action, "query");
         assert!(
             broker
                 .complete(StudioCommandResult {
-                    id: commands[0].id.clone(),
+                    id: main_command.id,
                     ok: true,
-                    output: Some(json!({"items": []})),
+                    output: Some(json!({ "items": [] })),
                     error: None,
                 })
                 .await
         );
-        assert!(task.await.expect("join").expect("result").ok);
+        assert!(main_task.await.expect("join").expect("result").ok);
+
+        let runtime_broker = broker.clone();
+        let runtime_task =
+            tokio::spawn(async move { runtime_broker.submit_action("capture", json!({})).await });
+        let runtime_command = wait_for_runtime_command(&broker).await;
+        assert_eq!(runtime_command.action, "capture");
+        assert!(
+            broker
+                .complete(StudioCommandResult {
+                    id: runtime_command.id,
+                    ok: true,
+                    output: Some(json!({ "data_base64": "cG5n" })),
+                    error: None,
+                })
+                .await
+        );
+        assert!(runtime_task.await.expect("join").expect("result").ok);
+    }
+
+    #[test]
+    fn runtime_actions_route_to_runtime_plugin_only() {
+        assert!(is_runtime_action("capture"));
+        assert!(is_runtime_action("scenario_test"));
+        assert!(is_runtime_action("device"));
+        assert!(!is_runtime_action("batch"));
+        assert!(!is_runtime_action("query"));
+    }
+
+    #[test]
+    fn scenario_capture_rotation_keeps_only_latest_completed_test() {
+        let root = test_dir("capture-rotation");
+        fs::create_dir_all(&root).expect("create root");
+        let workspace =
+            WorkspaceFs::new(&root, crate::PermissionMode::Workspace).expect("workspace");
+
+        let mut first = StudioCommandResult {
+            id: "first".into(),
+            ok: true,
+            output: Some(json!({
+                "captures": [
+                    { "data_base64": "Zmlyc3Q=" },
+                    { "data_base64": "Zmlyc3QtMg==" }
+                ]
+            })),
+            error: None,
+        };
+        let first_paths =
+            persist_captures_in_result(&mut first, &workspace, true).expect("persist first");
+        assert_eq!(first_paths.len(), 2);
+        assert_eq!(
+            rotate_test_captures(&workspace, &first_paths).expect("rotate first"),
+            0
+        );
+        for path in &first_paths {
+            assert!(workspace.root().join(path).exists());
+        }
+
+        std::thread::sleep(Duration::from_millis(2));
+        let mut second = StudioCommandResult {
+            id: "second".into(),
+            ok: true,
+            output: Some(json!({
+                "captures": [{ "data_base64": "c2Vjb25k" }]
+            })),
+            error: None,
+        };
+        let second_paths =
+            persist_captures_in_result(&mut second, &workspace, true).expect("persist second");
+        assert_eq!(second_paths.len(), 1);
+        assert_eq!(
+            rotate_test_captures(&workspace, &second_paths).expect("rotate second"),
+            2
+        );
+        for path in &first_paths {
+            assert!(!workspace.root().join(path).exists());
+        }
+        assert!(workspace.root().join(&second_paths[0]).exists());
+
+        let marker: TestCaptureMarker = serde_json::from_str(
+            &workspace
+                .read_text(TEST_CAPTURE_MARKER)
+                .expect("read capture marker"),
+        )
+        .expect("parse capture marker");
+        assert_eq!(marker.paths, second_paths);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn capture_rotation_rejects_non_roldex_test_paths() {
+        assert!(is_safe_test_capture_path(".roldex/captures/test-123-0.png"));
+        assert!(!is_safe_test_capture_path(
+            ".roldex/captures/studio-123-0.png"
+        ));
+        assert!(!is_safe_test_capture_path("screenshots/test-1.png"));
+        assert!(!is_safe_test_capture_path(
+            ".roldex/captures/test-../../user.png"
+        ));
     }
 }

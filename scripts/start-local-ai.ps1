@@ -62,12 +62,20 @@ function Resolve-LlamaServer {
     throw @"
 Could not find llama-server.exe.
 
-Later, download/build llama.cpp and either:
+Later, install llama.cpp with scripts/install-local-runtime.ps1, or either:
   1. pass -LlamaServerPath "X:\path\to\llama-server.exe", or
   2. set ROLDEX_LLAMA_SERVER to that executable path.
 
 The large model file can live on any drive, including an external USB drive.
 "@
+}
+
+function Quote-NativeArgument {
+    param([string]$Value)
+    if ($Value.Contains('"')) {
+        throw "Native launcher arguments cannot contain a double-quote character: $Value"
+    }
+    return '"' + $Value + '"'
 }
 
 $model = (Resolve-Path -LiteralPath $ModelPath -ErrorAction Stop).Path
@@ -76,6 +84,9 @@ if (-not (Test-Path -LiteralPath $model -PathType Leaf)) {
 }
 if ([IO.Path]::GetExtension($model) -ne ".gguf") {
     Write-Warning "The selected model does not end in .gguf. llama.cpp normally expects a GGUF model file."
+}
+if ([string]::IsNullOrWhiteSpace($ModelAlias)) {
+    throw "ModelAlias cannot be empty."
 }
 
 $server = Resolve-LlamaServer -RequestedPath $LlamaServerPath
@@ -92,22 +103,22 @@ try {
 }
 
 if (-not $alreadyRunning) {
-    $arguments = @(
-        "--model", $model,
+    $argumentLine = @(
+        "--model", (Quote-NativeArgument $model),
         "--host", "127.0.0.1",
         "--port", "$Port",
         "--ctx-size", "$ContextSize",
-        "--alias", $ModelAlias,
+        "--alias", (Quote-NativeArgument $ModelAlias),
         "--jinja",
-        "--n-gpu-layers", $GpuLayers
-    )
+        "--n-gpu-layers", "$GpuLayers"
+    ) -join " "
 
     Write-Host "Starting local Roldex AI..."
     Write-Host "Model: $model"
     Write-Host "Server: $server"
     Write-Host "Endpoint: $chatUrl"
 
-    Start-Process -FilePath $server -ArgumentList $arguments -WindowStyle Normal | Out-Null
+    Start-Process -FilePath $server -ArgumentList $argumentLine -WindowStyle Normal | Out-Null
 
     $ready = $false
     for ($attempt = 0; $attempt -lt 120; $attempt++) {

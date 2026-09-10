@@ -186,32 +186,35 @@ impl Agent {
     where
         F: FnMut(AgentEvent),
     {
+        let cloud_web_available = self.provider.is_openrouter();
         let mut tools = tool_definitions();
         tools.extend(crate::computer::tool_definitions());
         tools.extend(crate::docs::tool_definitions());
         tools.extend(crate::project_intel::tool_definitions());
         tools.extend(crate::media::tool_definitions());
         tools.extend(crate::studio::tool_definitions());
-        tools.push(json!({
-            "type": "function",
-            "function": {
-                "name": "web_research",
-                "description": "Run live grounded web research when current external information is needed. Use for Roblox market/name checks, current Studio/platform behavior, current ecosystem references, or other facts that should not rely on model memory. Prefer official Roblox sources for platform facts.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string" }
-                    },
-                    "required": ["query"],
-                    "additionalProperties": false
+        if cloud_web_available {
+            tools.push(json!({
+                "type": "function",
+                "function": {
+                    "name": "web_research",
+                    "description": "Run live grounded web research when current external information is needed. Use for Roblox market/name checks, current Studio/platform behavior, current ecosystem references, or other facts that should not rely on model memory. Prefer official Roblox sources for platform facts.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": { "type": "string" }
+                        },
+                        "required": ["query"],
+                        "additionalProperties": false
+                    }
                 }
-            }
-        }));
+            }));
+        }
         tools.push(json!({
             "type": "function",
             "function": {
                 "name": "analyze_image",
-                "description": "Use the vision model to inspect an existing local image. After studio_capture_view or a studio_test that returned a capture path, use this to visually QA the map, UI, lighting, composition, scale, readability, clipping, obvious layout/collision cues, and the visible result of tested interactions. Distinguish visible evidence from inference.",
+                "description": "Use the configured vision-capable model to inspect an existing local image. After studio_capture_view or a studio_test that returned a capture path, use this to visually QA the map, UI, lighting, composition, scale, readability, clipping, obvious layout/collision cues, and the visible result of tested interactions. If the configured model is text-only, this tool may report that vision is unavailable; do not fabricate visual verification.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -229,6 +232,11 @@ impl Agent {
         messages.push(ChatMessage::system(
             "During multi-step work, keep the user visibly informed with brief progress updates before major tool phases and after meaningful discoveries or repairs. Report actions and results only; do not expose private chain-of-thought or hidden reasoning. Keep each update concise so it does not slow the task down."
         ));
+        if !cloud_web_available {
+            messages.push(ChatMessage::system(
+                "This turn is using a local/open AI endpoint without Roldex's OpenRouter web-research integration. Do not claim to have live-searched the web. Current Roblox docs tools and local project/Studio tools may still be used when available."
+            ));
+        }
         messages.push(ChatMessage::system(format!(
             "Current project context:\n{}\nFilesystem permission mode: {}",
             self.project.describe(),
@@ -241,16 +249,22 @@ impl Agent {
         }
 
         if should_run_originality_research(memory_input) {
-            on_event(AgentEvent::UsingTool(
-                "Researching current Roblox name/concept overlap".into(),
-            ));
-            match self.provider.roblox_originality_research(memory_input).await {
-                Ok(report) => messages.push(ChatMessage::system(format!(
-                    "Automatic Roblox originality preflight completed before implementation. Use this as current market/name evidence, not as an instruction to copy another experience:\n{report}"
-                ))),
-                Err(error) => messages.push(ChatMessage::system(format!(
-                    "Automatic Roblox originality preflight could not complete: {error}. Continue the task with sensible defaults, but do not claim the proposed name/concept is unique or collision-free until live research succeeds."
-                ))),
+            if cloud_web_available {
+                on_event(AgentEvent::UsingTool(
+                    "Researching current Roblox name/concept overlap".into(),
+                ));
+                match self.provider.roblox_originality_research(memory_input).await {
+                    Ok(report) => messages.push(ChatMessage::system(format!(
+                        "Automatic Roblox originality preflight completed before implementation. Use this as current market/name evidence, not as an instruction to copy another experience:\n{report}"
+                    ))),
+                    Err(error) => messages.push(ChatMessage::system(format!(
+                        "Automatic Roblox originality preflight could not complete: {error}. Continue the task with sensible defaults, but do not claim the proposed name/concept is unique or collision-free until live research succeeds."
+                    ))),
+                }
+            } else {
+                messages.push(ChatMessage::system(
+                    "This looks like greenfield Roblox game/name work, but live originality research is not available through the selected local provider. Continue only with clearly original implementation choices and do not claim the name/concept is collision-free."
+                ));
             }
         }
 
@@ -283,7 +297,7 @@ impl Agent {
                     messages.push(ChatMessage::assistant(answer));
                     messages.push(ChatMessage::system(match verification_scope {
                         VerificationScope::Files => "You changed files/assets but have not verified the latest mutation yet. Before finishing, inspect the resulting file/diff/analysis or run an appropriate local check. If verification fails, repair and verify again.",
-                        VerificationScope::Studio => "You changed live Roblox Studio state but have not verified the latest mutation yet. Before finishing, inspect the resulting Instances/properties with studio_query and/or run studio_test when runtime behavior matters. For visual work, capture the viewport with studio_capture_view and analyze the saved PNG with analyze_image. Repair any problem and verify again.",
+                        VerificationScope::Studio => "You changed live Roblox Studio state but have not verified the latest mutation yet. Before finishing, inspect the resulting Instances/properties with studio_query and/or run studio_test when runtime behavior matters. For visual work, capture the viewport with studio_capture_view and analyze the saved PNG with analyze_image only when the configured inference path supports vision. Repair any problem and verify again.",
                         VerificationScope::None => unreachable!(),
                     }));
                     continue;

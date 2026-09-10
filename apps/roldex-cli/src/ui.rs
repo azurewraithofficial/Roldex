@@ -93,10 +93,11 @@ impl AppState {
             log: vec![LogEntry {
                 kind: LogKind::System,
                 text: format!(
-                    "Roldex v{} • {} • {}\nType the result you want. Roldex will inspect, build, test, repair, and verify it.",
+                    "Roldex v{} • {} • {} • AI {}\nType the result you want. Roldex will inspect, build, test, repair, and verify it.",
                     env!("CARGO_PKG_VERSION"),
                     context.project.kind,
-                    context.config.permissions.mode
+                    context.config.permissions.mode,
+                    context.config.ai.provider
                 ),
             }],
             draft_response: String::new(),
@@ -427,8 +428,10 @@ fn handle_local_command(input: &str, context: &UiContext, state: &mut AppState) 
         "/status" => state.push(
             LogKind::System,
             format!(
-                "{}\nStudio connected: {}",
+                "{}\nAI: {} / {}\nStudio connected: {}",
                 context.project.describe(),
+                context.config.ai.provider,
+                context.config.ai.model,
                 context.studio_broker.is_connected()
             ),
         ),
@@ -450,12 +453,21 @@ fn handle_local_command(input: &str, context: &UiContext, state: &mut AppState) 
 }
 
 fn doctor_text(context: &UiContext) -> String {
-    let ai_key = std::env::var_os(&context.config.ai.api_key_env).is_some();
     let media_key = std::env::var_os("POLLINATIONS_API_KEY").is_some();
     let git_available = Command::new("git")
         .arg("--version")
         .output()
         .is_ok_and(|output| output.status.success());
+
+    let ai_key_status = if context.config.ai.requires_api_key() {
+        if std::env::var_os(&context.config.ai.api_key_env).is_some() {
+            format!("AI key {}: configured", context.config.ai.api_key_env)
+        } else {
+            format!("AI key {}: missing", context.config.ai.api_key_env)
+        }
+    } else {
+        "AI key: not required".to_string()
+    };
 
     let mut lines = vec![
         "Roldex doctor".to_string(),
@@ -470,11 +482,10 @@ fn doctor_text(context: &UiContext) -> String {
             context.project.kind
         ),
         format!("Permissions: {}", context.config.permissions.mode),
-        format!(
-            "AI key {}: {}",
-            context.config.ai.api_key_env,
-            if ai_key { "configured" } else { "missing" }
-        ),
+        format!("AI provider: {}", context.config.ai.provider),
+        format!("AI model: {}", context.config.ai.model),
+        format!("AI endpoint: {}", context.config.ai.endpoint),
+        ai_key_status,
         format!(
             "Media key POLLINATIONS_API_KEY: {}",
             if media_key {
@@ -530,7 +541,7 @@ fn doctor_text(context: &UiContext) -> String {
 }
 
 fn help_text() -> &'static str {
-    "Just type what you want in normal language. Roldex chooses tools itself.\n\nExamples:\n• build a polished lobby in the open Studio place and test it\n• fix my datastore system and keep testing until it passes\n• make this inventory panel work on desktop and phone\n• inspect this screenshot and fix what is wrong\n\nShortcuts:\n/help   show this help\n/doctor check setup\n/status project + Studio status\n/tree   show project tree\n/read <path> read a file\n/clear  clear transcript\n/quit   exit\n\nEsc stops the active response/task. Ctrl+C exits Roldex."
+    "Just type what you want in normal language. Roldex chooses tools itself.\n\nExamples:\n• build a polished lobby in the open Studio place and test it\n• fix my datastore system and keep testing until it passes\n• make this inventory panel work on desktop and phone\n• inspect this screenshot and fix what is wrong\n\nShortcuts:\n/help   show this help\n/doctor check setup\n/status project + AI + Studio status\n/tree   show project tree\n/read <path> read a file\n/clear  clear transcript\n/quit   exit\n\nEsc stops the active response/task. Ctrl+C exits Roldex."
 }
 
 fn compact_status(raw: &str) -> String {
@@ -550,6 +561,11 @@ fn compact_status(raw: &str) -> String {
 fn friendly_error(error: &str) -> String {
     if error.contains("OPENROUTER_API_KEY") && error.contains("missing") {
         return "AI key is missing. Set OPENROUTER_API_KEY in Windows, then restart Roldex.".into();
+    }
+    if error.contains("could not reach the local AI server") {
+        return format!(
+            "Local AI server is not running or reachable. Start llama-server first, then retry.\n\n{error}"
+        );
     }
     if error.to_ascii_lowercase().contains("timed out") {
         return format!(
@@ -592,6 +608,15 @@ fn draw(
                 Span::styled(
                     context.project.kind.to_string(),
                     Style::default().fg(Color::DarkGray),
+                ),
+                Span::raw("  •  AI "),
+                Span::styled(
+                    context.config.ai.provider.to_string(),
+                    Style::default().fg(if context.config.ai.is_local() {
+                        Color::Green
+                    } else {
+                        Color::DarkGray
+                    }),
                 ),
                 Span::raw("  •  "),
                 studio,

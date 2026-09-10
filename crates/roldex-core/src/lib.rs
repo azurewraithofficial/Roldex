@@ -17,7 +17,10 @@ mod workspace_fs;
 
 pub use agent::Agent;
 pub use analysis::{FindingSeverity, LuauAnalysisReport, LuauFinding, analyze_luau};
-pub use config::{AiConfig, Config, PermissionConfig, PermissionMode, UiConfig};
+pub use config::{
+    AiConfig, Config, DEFAULT_LOCAL_AI_ENDPOINT, DEFAULT_LOCAL_AI_MODEL, PermissionConfig,
+    PermissionMode, UiConfig,
+};
 pub use project::{ProjectKind, ProjectSummary, project_tree};
 pub use provider::ToolCall;
 pub use studio::{StudioBroker, StudioCommand, StudioCommandResult};

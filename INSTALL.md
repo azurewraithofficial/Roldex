@@ -1,186 +1,174 @@
 # Installing Roldex
 
-Roldex is designed to be installed once, then launched from any Roblox/Rojo project folder.
+Roldex is designed to be installed once, then launched from any Roblox/Rojo project folder. The CLI supports both cloud inference and an optional local OpenAI-compatible model server.
 
-## Windows — one-line install
+## Windows — one-line development install
 
-For the current development build, open **PowerShell** and paste this **single line**:
+Open **PowerShell** and paste:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass -Force; $env:ROLDEX_REF='roldex-intelligence-studio-vision'; irm 'https://raw.githubusercontent.com/azurewraithofficial/Roldex/roldex-intelligence-studio-vision/scripts/install.ps1' | iex
 ```
 
-That line installs the CLI and both Roblox Studio plugins. It does **not** clone the Roldex repository to your PC.
+That installs the CLI and both Roblox Studio plugins. It does **not** clone the Roldex repository permanently to the PC.
 
-Once this development build is merged/released, the normal stable one-line installer will be:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass -Force; irm 'https://raw.githubusercontent.com/azurewraithofficial/Roldex/main/scripts/install.ps1' | iex
-```
+Once the development branch is merged/released, the stable installer will use `main` instead.
 
 ### What the installer does
 
 1. Detects Windows x64 vs ARM64.
-2. Tries to download the newest matching prebuilt `roldex.exe` release.
-3. Downloads its `.sha256` file and verifies the executable.
-4. Runs `roldex --version` to make sure the binary starts.
-5. Installs it under `%LOCALAPPDATA%\Roldex\bin`.
-6. Adds Roldex to your user PATH and to the current PowerShell session.
-7. Installs `RoldexStudio.plugin.lua`.
-8. Installs `RoldexStudioRuntime.plugin.lua` for screenshots, device simulation, virtual input, chat tests, and automated playtests.
-9. Validates both Studio plugin files.
-10. If no verified prebuilt release exists, uses the source-build fallback described below.
+2. Prefers a verified prebuilt `roldex.exe`.
+3. Verifies the executable checksum when a matching prebuilt is available.
+4. Installs it under `%LOCALAPPDATA%\Roldex\bin`.
+5. Adds Roldex to the user PATH/current PowerShell session.
+6. Installs `RoldexStudio.plugin.lua`.
+7. Installs `RoldexStudioRuntime.plugin.lua`.
+8. Validates both Studio plugin files.
+9. Falls back to a temporary source build when necessary.
 
-Restart Roblox Studio after Roldex is installed or updated so Studio loads both plugin files.
+Restart Roblox Studio after Roldex is installed or updated so Studio reloads both plugins.
 
-## No Git clone / low-disk fallback
+## Cloud AI mode
 
-The source fallback does **not** run `git clone`.
+Cloud mode is the compatibility default.
 
-If a prebuilt release is unavailable but Cargo already exists, the installer:
-
-1. Downloads the selected Roldex branch as a temporary ZIP.
-2. Extracts it under `%TEMP%`.
-3. Uses a temporary Cargo dependency/cache folder.
-4. Builds only the release CLI.
-5. Copies only the finished `roldex.exe` into `%LOCALAPPDATA%\Roldex\bin`.
-6. Deletes the downloaded ZIP, extracted source, build output, and temporary Cargo cache.
-
-So the source repository is not permanently stored on your PC.
-
-## Fallbacks / troubleshooting
-
-### `cargo --version` gives a version
-
-Good. You do not need to do anything. If no prebuilt release is available, the one-line installer can use Cargo automatically.
-
-### `cargo --version` says `cargo is not recognized`
-
-First check the normal Rust location:
-
-```powershell
-& "$HOME\.cargo\bin\cargo.exe" --version
-```
-
-If that prints a Cargo version, close PowerShell, open it again, and rerun the **same one-line Roldex installer**. The Roldex installer also checks this standard path automatically.
-
-### `$HOME\.cargo\bin\cargo.exe` does not exist
-
-Rust/Cargo is not installed.
-
-If Roldex has a published prebuilt Windows release, that is fine: **Rust is not required at all**.
-
-If no prebuilt release is available yet, install Rust once from the official Rust installer at `https://rustup.rs/`, then reopen PowerShell and rerun the same one-line Roldex installer.
-
-You still do not need to clone Roldex.
-
-### Cargo build fails with `link.exe`, MSVC, Visual Studio, or C++ Build Tools errors
-
-Your Rust installation is present but the Windows native linker/build tools are missing.
-
-Install **Microsoft C++ Build Tools / Desktop development with C++**, then rerun the exact same Roldex one-line installer.
-
-This fallback is only needed when building Roldex from source. A published prebuilt Roldex release avoids Rust/MSVC completely.
-
-### `irm` or `Invoke-RestMethod` is blocked
-
-Use this one-line download-and-run fallback instead:
-
-```powershell
-$env:ROLDEX_REF='roldex-intelligence-studio-vision'; $p="$env:TEMP\roldex-install.ps1"; Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/azurewraithofficial/Roldex/roldex-intelligence-studio-vision/scripts/install.ps1' -OutFile $p; powershell -ExecutionPolicy Bypass -File $p; Remove-Item $p -Force -ErrorAction SilentlyContinue
-```
-
-### PowerShell says script execution is disabled
-
-The recommended one-line installer already applies a bypass only to the current PowerShell process:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass -Force
-```
-
-It does not permanently weaken your machine-wide execution policy.
-
-### `roldex` is not recognized after installation
-
-Try:
-
-```powershell
-& "$env:LOCALAPPDATA\Roldex\bin\roldex.exe" --version
-```
-
-If that works, close and reopen PowerShell so Windows reloads your user PATH.
-
-Then try:
-
-```powershell
-roldex --version
-```
-
-### Studio plugin does not appear
-
-1. Close Roblox Studio completely.
-2. Rerun the same one-line installer.
-3. Reopen Studio.
-4. Check that these files exist:
-
-```text
-%LOCALAPPDATA%\Roblox\Plugins\RoldexStudio.plugin.lua
-%LOCALAPPDATA%\Roblox\Plugins\RoldexStudioRuntime.plugin.lua
-```
-
-Roldex can also attempt to repair its plugins later through its own repair tooling.
-
-## Configure the AI key
-
-Roldex currently defaults to OpenRouter.
-
-For the current PowerShell session:
+For OpenRouter in the current PowerShell session:
 
 ```powershell
 $env:OPENROUTER_API_KEY="YOUR_OPENROUTER_KEY"
+roldex
 ```
 
-To save it for future PowerShell windows:
+To save a key for later PowerShell windows:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("OPENROUTER_API_KEY", "YOUR_OPENROUTER_KEY", "User")
 ```
 
-Open a new PowerShell window after saving a user environment variable.
+Do not share API keys publicly. Cloud provider quotas, rate limits, and charges can still apply.
 
-Do not share your API key publicly.
+## Local AI mode — no OpenRouter key
 
-Optional image/voice generation uses `POLLINATIONS_API_KEY` when configured:
+Roldex can connect to a local OpenAI-compatible server. The intended runtime is `llama.cpp`/`llama-server`.
 
-```powershell
-[Environment]::SetEnvironmentVariable("POLLINATIONS_API_KEY", "YOUR_MEDIA_KEY", "User")
+This removes OpenRouter request/day limits from text/coding inference performed locally. It does **not** remove hardware limits: the model still needs enough RAM/VRAM/CPU/GPU resources.
+
+Large model files are intentionally not bundled in GitHub or in the normal Roldex installer.
+
+### If a local server is already running
+
+Default endpoint:
+
+```text
+http://127.0.0.1:8080/v1/chat/completions
 ```
 
-Provider quotas or charges can still apply. Roldex itself does not require a Roldex subscription. Live web originality/name research can also depend on the configured provider's web-search availability/credits.
+Launch:
+
+```powershell
+roldex --local-ai
+```
+
+Custom server/model:
+
+```powershell
+roldex --local-ai `
+  --local-endpoint "http://127.0.0.1:9000/v1/chat/completions" `
+  --local-model "roldex-local"
+```
+
+### Start llama.cpp from any drive
+
+When you have a `llama-server.exe` and a GGUF model, the repository includes `scripts/start-local-ai.ps1`.
+
+Example using an external drive:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-local-ai.ps1 `
+  -LlamaServerPath "E:\RoldexAI\llama.cpp\llama-server.exe" `
+  -ModelPath "E:\RoldexAI\models\coding-model.gguf" `
+  -LaunchRoldex `
+  -FullAccess
+```
+
+The drive letter can be changed freely. The script validates the paths, starts a loopback-only model server, waits for its `/health` endpoint, configures Roldex local mode, and optionally launches Roldex.
+
+Full details: **[docs/LOCAL_AI.md](docs/LOCAL_AI.md)**.
+
+## Example local config
+
+Copy `roldex.local.example.toml` to `roldex.toml` in a project if you prefer file-based configuration:
+
+```powershell
+Copy-Item .\roldex.local.example.toml .\roldex.toml
+```
+
+`roldex.toml` is ignored by Git so machine-specific paths/settings are not accidentally committed.
+
+## Environment overrides
+
+Roldex recognizes:
+
+```text
+ROLDEX_AI_MODE
+ROLDEX_AI_PROVIDER
+ROLDEX_AI_ENDPOINT
+ROLDEX_MODEL
+ROLDEX_API_KEY_ENV
+ROLDEX_AI_TIMEOUT_SECONDS
+ROLDEX_OPENROUTER_SORT
+```
+
+For local mode:
+
+```powershell
+$env:ROLDEX_AI_MODE="local"
+$env:ROLDEX_AI_ENDPOINT="http://127.0.0.1:8080/v1/chat/completions"
+$env:ROLDEX_MODEL="roldex-local"
+roldex
+```
 
 ## Run Roldex
 
-Open PowerShell in the Roblox/Rojo project folder and run:
+From a Roblox/Rojo project folder:
 
 ```powershell
 roldex
 ```
 
-For tasks that genuinely require files/tools outside the project directory:
+For tasks that genuinely require access outside the project directory:
 
 ```powershell
 roldex --full-access
 ```
 
-Keep Roldex running while Roblox Studio is open. The local Studio bridge uses:
+For local inference:
+
+```powershell
+roldex --local-ai
+```
+
+Keep Roldex running while Roblox Studio is open. The Studio bridge uses:
 
 ```text
 http://127.0.0.1:38247
 ```
 
+## Repair the Studio plugins
+
+Close Roblox Studio, then run:
+
+```powershell
+roldex --repair-studio-plugin
+```
+
+Restart Studio afterward.
+
+Roldex also synchronizes the bundled plugin copies automatically on Windows startup when they are missing or stale.
+
 ## Check installation
 
-First verify the executable:
+Verify the executable:
 
 ```powershell
 roldex --version
@@ -192,22 +180,56 @@ Then start Roldex and run:
 /doctor
 ```
 
-`/doctor` checks things such as:
+`/doctor` checks the project, AI/provider setup, Git availability, Studio bridge, and Studio plugin installation.
 
-- Windows architecture
-- project detection
-- OpenRouter/media keys
-- Git availability
-- Studio bridge
-- Studio plugin installation
+## No Git clone / low-disk fallback
 
-## Reinstall or update
+When a prebuilt executable is unavailable, the source fallback can use a temporary repository ZIP/build directory and delete it afterward. The source checkout/build cache does not need to remain on the PC.
 
-Just rerun the same **one-line installer**. It replaces the CLI and both Studio plugin files with the newest selected version.
+## Troubleshooting
+
+### `roldex` is not recognized
+
+Try:
+
+```powershell
+& "$env:LOCALAPPDATA\Roldex\bin\roldex.exe" --version
+```
+
+If that works, close and reopen PowerShell so Windows reloads the user PATH.
+
+### Local AI says it cannot reach the server
+
+The local server must be running before Roldex can generate a response. Check:
+
+```powershell
+irm http://127.0.0.1:8080/health
+```
+
+If that fails, check the `llama-server` window for model, RAM/VRAM, or startup errors.
+
+### Studio plugin does not appear/connect
+
+1. Close Roblox Studio completely.
+2. Run `roldex --repair-studio-plugin`.
+3. Reopen Studio.
+4. Start Roldex in the project folder.
+5. Allow Studio localhost access if prompted.
+
+Installed plugin files on Windows:
+
+```text
+%LOCALAPPDATA%\Roblox\Plugins\RoldexStudio.plugin.lua
+%LOCALAPPDATA%\Roblox\Plugins\RoldexStudioRuntime.plugin.lua
+```
+
+### Cargo/source build errors
+
+A verified prebuilt Roldex release avoids needing Rust/MSVC. If a source fallback is required, install Rust/Cargo and Microsoft C++ Build Tools/Desktop development with C++ as needed.
 
 ## Studio permissions
 
-Both Roldex Studio plugins communicate only with the local Roldex bridge. Roblox Studio may ask for permission to access:
+The Roldex Studio plugins communicate with the local Roldex bridge. Roblox Studio may ask for permission to access:
 
 ```text
 http://127.0.0.1:38247
@@ -215,6 +237,4 @@ http://127.0.0.1:38247
 
 Allow localhost access.
 
-The visual-testing runtime can also request Studio screenshot permission the first time Roldex visually inspects the viewport. Allow it if you want screenshot/vision QA.
-
-If Studio was already open during installation or repair, restart Studio so it loads the new plugin source.
+Visual testing can also request Studio screenshot permission. If Studio was open while plugin files were replaced, restart Studio before testing the new plugin code.

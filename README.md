@@ -30,6 +30,20 @@ Roldex -> 127.0.0.1:8080 -> llama-server -> local GGUF model
 
 Local inference removes OpenRouter request/day limits from the text/coding path. It still has physical limits: model size, RAM, VRAM, CPU/GPU speed, storage, and power.
 
+Install the local `llama.cpp` runtime on Windows without downloading a model yet:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-local-runtime.ps1
+```
+
+Or place that runtime on another drive:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-local-runtime.ps1 `
+  -InstallDir "E:\RoldexAI\llama.cpp" `
+  -Backend cpu
+```
+
 Start Roldex against an already-running local server:
 
 ```powershell
@@ -44,7 +58,7 @@ roldex --local-ai `
   --local-model "roldex-local"
 ```
 
-Windows users can also use:
+When a GGUF model has been chosen, Windows users can start the local server and Roldex together:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\start-local-ai.ps1 `
@@ -54,6 +68,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-local-ai.ps1 `
 ```
 
 The model/runtime can live on **any drive**, including an external USB drive. Roldex itself does not require the model to be stored on the Windows system drive.
+
+Before trusting a local model with files or Studio, Roldex can test normal chat plus actual OpenAI-style tool calling:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-local-ai.ps1
+```
 
 See **[docs/LOCAL_AI.md](docs/LOCAL_AI.md)** for the full local architecture and setup contract.
 

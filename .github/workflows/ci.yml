@@ -26,12 +26,13 @@ jobs:
       - name: Studio plugin static checks (Windows)
         if: runner.os == 'Windows'
         run: python scripts/check-studio-plugin.py
-      - name: Parse Windows installer
+      - name: Parse Windows scripts
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           [scriptblock]::Create((Get-Content -Raw scripts/install.ps1)) | Out-Null
-          Write-Host "Windows installer syntax parsed successfully"
+          [scriptblock]::Create((Get-Content -Raw scripts/start-local-ai.ps1)) | Out-Null
+          Write-Host "Windows installer and local AI launcher syntax parsed successfully"
       - name: Check
         run: cargo check --workspace --all-targets
       - name: Test

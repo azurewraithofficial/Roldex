@@ -271,9 +271,7 @@ impl OpenAiCompatibleProvider {
             provider: provider_preferences.as_ref(),
         };
 
-        let body = self
-            .send_json_request(api_key.as_deref(), &request)
-            .await?;
+        let body = self.send_json_request(api_key.as_deref(), &request).await?;
         let parsed: ChatResponse = serde_json::from_str(&body).with_context(|| {
             format!(
                 "could not parse AI provider response: {}",

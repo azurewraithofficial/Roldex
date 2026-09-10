@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+#[cfg(windows)]
+use anyhow::Context;
+use anyhow::Result;
 
 #[derive(Debug, Default)]
 pub struct PluginSyncReport {

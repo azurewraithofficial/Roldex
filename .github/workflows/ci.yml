@@ -31,6 +31,7 @@ jobs:
         shell: pwsh
         run: |
           [scriptblock]::Create((Get-Content -Raw scripts/install.ps1)) | Out-Null
+          [scriptblock]::Create((Get-Content -Raw scripts/install-local-runtime.ps1)) | Out-Null
           [scriptblock]::Create((Get-Content -Raw scripts/start-local-ai.ps1)) | Out-Null
           [scriptblock]::Create((Get-Content -Raw scripts/test-local-ai.ps1)) | Out-Null
           Write-Host "Windows installer and local AI scripts parsed successfully"

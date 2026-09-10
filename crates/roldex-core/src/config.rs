@@ -6,6 +6,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+pub const DEFAULT_LOCAL_AI_ENDPOINT: &str = "http://127.0.0.1:8080/v1/chat/completions";
+pub const DEFAULT_LOCAL_AI_MODEL: &str = "local-model";
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
@@ -31,16 +34,33 @@ impl Config {
             Self::default()
         };
 
-        // Small environment overrides make model/latency experiments possible without
-        // editing a project config file.
+        if env::var("ROLDEX_AI_MODE")
+            .is_ok_and(|mode| mode.trim().eq_ignore_ascii_case("local"))
+        {
+            config.ai.activate_local(None, None);
+        }
+
+        if let Ok(provider) = env::var("ROLDEX_AI_PROVIDER") {
+            if !provider.trim().is_empty() {
+                config.ai.provider = provider.trim().to_string();
+            }
+        }
+        if let Ok(endpoint) = env::var("ROLDEX_AI_ENDPOINT") {
+            if !endpoint.trim().is_empty() {
+                config.ai.endpoint = endpoint.trim().to_string();
+            }
+        }
         if let Ok(model) = env::var("ROLDEX_MODEL") {
             if !model.trim().is_empty() {
-                config.ai.model = model;
+                config.ai.model = model.trim().to_string();
             }
+        }
+        if let Ok(api_key_env) = env::var("ROLDEX_API_KEY_ENV") {
+            config.ai.api_key_env = api_key_env.trim().to_string();
         }
         if let Ok(raw) = env::var("ROLDEX_AI_TIMEOUT_SECONDS") {
             if let Ok(seconds) = raw.parse::<u64>() {
-                config.ai.request_timeout_seconds = seconds.clamp(15, 300);
+                config.ai.request_timeout_seconds = seconds.clamp(15, 600);
             }
         }
         if let Ok(sort) = env::var("ROLDEX_OPENROUTER_SORT") {
@@ -65,6 +85,33 @@ pub struct AiConfig {
     pub request_timeout_seconds: u64,
     pub max_retries: u32,
     pub openrouter_sort: String,
+}
+
+impl AiConfig {
+    pub fn is_local(&self) -> bool {
+        self.provider.eq_ignore_ascii_case("local")
+    }
+
+    pub fn requires_api_key(&self) -> bool {
+        !self.is_local() && !self.api_key_env.trim().is_empty()
+    }
+
+    pub fn activate_local(&mut self, endpoint: Option<&str>, model: Option<&str>) {
+        self.provider = "local".into();
+        self.endpoint = endpoint
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DEFAULT_LOCAL_AI_ENDPOINT)
+            .to_string();
+        self.model = model
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DEFAULT_LOCAL_AI_MODEL)
+            .to_string();
+        self.api_key_env.clear();
+        self.request_timeout_seconds = self.request_timeout_seconds.max(180);
+        self.max_retries = self.max_retries.min(1);
+    }
 }
 
 impl Default for AiConfig {
@@ -135,5 +182,31 @@ mod tests {
         assert_eq!(config.ai.request_timeout_seconds, 75);
         assert_eq!(config.ai.max_retries, 2);
         assert_eq!(config.ai.openrouter_sort, "latency");
+        assert!(config.ai.requires_api_key());
+    }
+
+    #[test]
+    fn local_mode_needs_no_api_key() {
+        let mut ai = AiConfig::default();
+        ai.activate_local(None, None);
+        assert!(ai.is_local());
+        assert!(!ai.requires_api_key());
+        assert_eq!(ai.endpoint, DEFAULT_LOCAL_AI_ENDPOINT);
+        assert_eq!(ai.model, DEFAULT_LOCAL_AI_MODEL);
+        assert!(ai.api_key_env.is_empty());
+    }
+
+    #[test]
+    fn local_mode_accepts_custom_endpoint_and_model() {
+        let mut ai = AiConfig::default();
+        ai.activate_local(
+            Some("http://127.0.0.1:9000/v1/chat/completions"),
+            Some("qwen3-coder"),
+        );
+        assert_eq!(
+            ai.endpoint,
+            "http://127.0.0.1:9000/v1/chat/completions"
+        );
+        assert_eq!(ai.model, "qwen3-coder");
     }
 }

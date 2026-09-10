@@ -166,7 +166,7 @@ try {
         throw "Runtime extraction finished but $serverPath was not created."
     }
 
-    $versionInfo = @(
+    $versionLines = @(
         "source=ggml-org/llama.cpp",
         "release=$($runtimeRelease.tag_name)",
         "asset=$($asset.name)",
@@ -174,7 +174,8 @@ try {
         "backend=$Backend",
         "arch=$arch",
         "installed_utc=$([DateTime]::UtcNow.ToString('o'))"
-    ) | Where-Object { $_ } | Join-String -Separator "`n"
+    ) | Where-Object { $_ }
+    $versionInfo = $versionLines -join "`n"
     Set-Content -LiteralPath (Join-Path $target "ROLDEX_RUNTIME_VERSION.txt") -Value $versionInfo -Encoding UTF8
 
     [Environment]::SetEnvironmentVariable("ROLDEX_LLAMA_SERVER", $serverPath, "User")

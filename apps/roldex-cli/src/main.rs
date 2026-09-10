@@ -91,10 +91,9 @@ async fn main() -> Result<()> {
     }
 
     if cli.local_ai || cli.local_endpoint.is_some() || cli.local_model.is_some() {
-        config.ai.activate_local(
-            cli.local_endpoint.as_deref(),
-            cli.local_model.as_deref(),
-        );
+        config
+            .ai
+            .activate_local(cli.local_endpoint.as_deref(), cli.local_model.as_deref());
         if cli.local_endpoint.is_none() {
             config.ai.endpoint = DEFAULT_LOCAL_AI_ENDPOINT.into();
         }

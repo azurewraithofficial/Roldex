@@ -38,17 +38,39 @@ $cacheDir = Join-Path $root "cache"
 $tempDir = Join-Path $root "temp"
 $markerPath = Join-Path $root ".roldex-external-ai"
 
-if (-not (Test-Path -LiteralPath $serverPath -PathType Leaf)) {
-    throw @"
-llama-server.exe was not found at:
-  $serverPath
+New-Item -ItemType Directory -Force -Path $root, $modelDir, $cacheDir, $tempDir | Out-Null
+Set-Content -LiteralPath $markerPath -Value "Roldex External AI" -Encoding ASCII
 
-Install the Roldex local runtime on the external drive first.
-"@
+if (-not (Test-Path -LiteralPath $serverPath -PathType Leaf)) {
+    Write-Warning "llama-server.exe is missing from $runtimeDir. Roldex will repair the CPU runtime automatically."
+    $runtimeInstaller = Join-Path $env:TEMP "roldex-install-local-runtime.ps1"
+    Invoke-WebRequest -UseBasicParsing `
+        -Uri "https://raw.githubusercontent.com/$Repo/$Ref/scripts/install-local-runtime.ps1" `
+        -OutFile $runtimeInstaller `
+        -Headers @{ "User-Agent" = "Roldex-Low-Memory-Setup" }
+
+    try {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $runtimeInstaller `
+            -InstallDir $runtimeDir `
+            -Backend cpu `
+            -Force
+        if ($LASTEXITCODE -ne 0) {
+            throw "The llama.cpp runtime repair process exited with code $LASTEXITCODE."
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $runtimeInstaller -Force -ErrorAction SilentlyContinue
+    }
 }
 
-New-Item -ItemType Directory -Force -Path $modelDir, $cacheDir, $tempDir | Out-Null
-Set-Content -LiteralPath $markerPath -Value "Roldex External AI" -Encoding ASCII
+if (-not (Test-Path -LiteralPath $serverPath -PathType Leaf)) {
+    throw @"
+The local runtime repair completed, but llama-server.exe is still missing at:
+  $serverPath
+
+Check whether Windows Security quarantined llama-server.exe or whether the external drive is writable, then rerun this setup.
+"@
+}
 
 if ($ForceModel -or -not (Test-Path -LiteralPath $modelPath -PathType Leaf)) {
     $downloadPath = "$modelPath.download"
@@ -108,10 +130,10 @@ $model = Join-Path $root "models\roldex-model.gguf"
 $temp = Join-Path $root "temp"
 
 if (-not (Test-Path -LiteralPath $server -PathType Leaf)) {
-    throw "llama-server.exe was not found at $server"
+    throw "llama-server.exe was not found at $server. Rerun the low-memory setup to repair the runtime."
 }
 if (-not (Test-Path -LiteralPath $model -PathType Leaf)) {
-    throw "Roldex local model was not found at $model"
+    throw "Roldex local model was not found at $model. Rerun the low-memory setup to download it."
 }
 
 New-Item -ItemType Directory -Force -Path $temp | Out-Null

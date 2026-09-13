@@ -19,18 +19,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Apply cross-platform lint cleanup
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('crates/roldex-core/src/studio.rs')
-          text = path.read_text(encoding='utf-8')
-          old = '''        return Ok(vec![\n            main_path.display().to_string(),\n            runtime_path.display().to_string(),\n        ]);'''
-          new = '''        Ok(vec![\n            main_path.display().to_string(),\n            runtime_path.display().to_string(),\n        ])'''
-          if old in text:
-              path.write_text(text.replace(old, new, 1), encoding='utf-8')
-          PY
       - name: Format Rust
         run: cargo fmt --all
       - name: Commit formatting when needed
@@ -42,5 +30,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -- '*.rs'
-          git commit -m "Fix Windows clippy lint and format Rust sources"
+          git commit -m "Format Rust sources"
           git push origin HEAD:roldex-intelligence-studio-vision

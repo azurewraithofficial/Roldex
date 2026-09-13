@@ -56,6 +56,92 @@ function Get-RoldexAsset {
     return $match
 }
 
+function Invoke-RoldexDownload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+        [Parameter(Mandatory = $true)]
+        [string]$Destination,
+        [Parameter(Mandatory = $true)]
+        [string]$Label
+    )
+
+    Add-Type -AssemblyName System.Net.Http
+
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $true
+    $client = New-Object System.Net.Http.HttpClient($handler)
+    $client.Timeout = [TimeSpan]::FromHours(2)
+    $client.DefaultRequestHeaders.UserAgent.ParseAdd("Roldex-Local-AI-Installer")
+
+    $response = $null
+    $input = $null
+    $output = $null
+
+    try {
+        $response = $client.GetAsync(
+            $Uri,
+            [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
+        ).GetAwaiter().GetResult()
+        $response.EnsureSuccessStatusCode()
+
+        $totalBytes = $response.Content.Headers.ContentLength
+        $input = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        $output = New-Object System.IO.FileStream(
+            $Destination,
+            [System.IO.FileMode]::Create,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None,
+            1048576,
+            [System.IO.FileOptions]::SequentialScan
+        )
+
+        $buffer = New-Object byte[] (1024 * 1024)
+        [long]$downloaded = 0
+        $lastUiUpdate = [DateTime]::MinValue
+
+        while (($read = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $output.Write($buffer, 0, $read)
+            $downloaded += $read
+
+            $now = [DateTime]::UtcNow
+            if (($now - $lastUiUpdate).TotalMilliseconds -lt 150 -and $totalBytes -and $downloaded -lt $totalBytes) {
+                continue
+            }
+            $lastUiUpdate = $now
+
+            $downloadedGb = $downloaded / 1GB
+            if ($totalBytes -and $totalBytes -gt 0) {
+                $totalGb = $totalBytes / 1GB
+                $percent = [Math]::Min(100.0, ($downloaded * 100.0) / $totalBytes)
+                $status = "{0:N2} GB / {1:N2} GB ({2:N1}%)" -f $downloadedGb, $totalGb, $percent
+                Write-Progress -Activity $Label -Status $status -PercentComplete $percent
+            }
+            else {
+                $status = "{0:N2} GB downloaded (total size unavailable)" -f $downloadedGb
+                Write-Progress -Activity $Label -Status $status
+            }
+        }
+
+        $output.Flush()
+        Write-Progress -Activity $Label -Completed
+
+        if ($totalBytes -and $totalBytes -gt 0) {
+            Write-Host ("Downloaded {0:N2} GB / {1:N2} GB (100.0%)" -f ($downloaded / 1GB), ($totalBytes / 1GB)) -ForegroundColor Green
+        }
+        else {
+            Write-Host ("Downloaded {0:N2} GB" -f ($downloaded / 1GB)) -ForegroundColor Green
+        }
+    }
+    finally {
+        if ($output) { $output.Dispose() }
+        if ($input) { $input.Dispose() }
+        if ($response) { $response.Dispose() }
+        if ($client) { $client.Dispose() }
+        if ($handler) { $handler.Dispose() }
+    }
+}
+
 function Save-VerifiedAsset {
     param(
         [object]$Asset,
@@ -63,7 +149,10 @@ function Save-VerifiedAsset {
     )
 
     Write-Host "Downloading $($Asset.name)..."
-    Invoke-WebRequest -Uri $Asset.browser_download_url -Headers $headers -OutFile $Destination
+    Invoke-RoldexDownload `
+        -Uri $Asset.browser_download_url `
+        -Destination $Destination `
+        -Label $Asset.name
 
     $expectedDigest = [string]$Asset.digest
     if ($expectedDigest -match '^sha256:([0-9a-fA-F]{64})$') {

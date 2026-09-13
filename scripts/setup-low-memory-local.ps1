@@ -29,6 +29,93 @@ function Add-UserPath([string]$Directory) {
     }
 }
 
+function Invoke-RoldexDownload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+        [Parameter(Mandatory = $true)]
+        [string]$OutFile,
+        [string]$Label = "Download"
+    )
+
+    Add-Type -AssemblyName System.Net.Http
+
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $true
+    $client = New-Object System.Net.Http.HttpClient($handler)
+    $client.Timeout = [TimeSpan]::FromHours(2)
+    $client.DefaultRequestHeaders.UserAgent.ParseAdd("Roldex-Low-Memory-Setup")
+
+    $response = $null
+    $input = $null
+    $output = $null
+
+    try {
+        $response = $client.GetAsync(
+            $Uri,
+            [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
+        ).GetAwaiter().GetResult()
+        $response.EnsureSuccessStatusCode()
+
+        $totalBytes = $response.Content.Headers.ContentLength
+        $input = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        $output = New-Object System.IO.FileStream(
+            $OutFile,
+            [System.IO.FileMode]::Create,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None,
+            1048576,
+            [System.IO.FileOptions]::SequentialScan
+        )
+
+        $buffer = New-Object byte[] (1024 * 1024)
+        [long]$downloaded = 0
+        $lastUiUpdate = [DateTime]::MinValue
+
+        while (($read = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $output.Write($buffer, 0, $read)
+            $downloaded += $read
+
+            $now = [DateTime]::UtcNow
+            if (($now - $lastUiUpdate).TotalMilliseconds -lt 150 -and $totalBytes -and $downloaded -lt $totalBytes) {
+                continue
+            }
+            $lastUiUpdate = $now
+
+            $downloadedGb = $downloaded / 1GB
+            if ($totalBytes -and $totalBytes -gt 0) {
+                $totalGb = $totalBytes / 1GB
+                $percent = [Math]::Min(100.0, ($downloaded * 100.0) / $totalBytes)
+                $status = "{0:N2} GB / {1:N2} GB ({2:N1}%)" -f $downloadedGb, $totalGb, $percent
+                Write-Progress -Activity $Label -Status $status -PercentComplete $percent
+            }
+            else {
+                $status = "{0:N2} GB downloaded (total size unavailable)" -f $downloadedGb
+                Write-Progress -Activity $Label -Status $status
+            }
+        }
+
+        $output.Flush()
+        Write-Progress -Activity $Label -Completed
+
+        if ($totalBytes -and $totalBytes -gt 0) {
+            $finalGb = $downloaded / 1GB
+            $totalGb = $totalBytes / 1GB
+            Write-Host ("Downloaded {0:N2} GB / {1:N2} GB (100.0%)" -f $finalGb, $totalGb) -ForegroundColor Green
+        }
+        else {
+            Write-Host ("Downloaded {0:N2} GB" -f ($downloaded / 1GB)) -ForegroundColor Green
+        }
+    }
+    finally {
+        if ($output) { $output.Dispose() }
+        if ($input) { $input.Dispose() }
+        if ($response) { $response.Dispose() }
+        if ($client) { $client.Dispose() }
+        if ($handler) { $handler.Dispose() }
+    }
+}
+
 $root = [IO.Path]::GetFullPath($ExternalRoot)
 $runtimeDir = Join-Path $root "llama.cpp"
 $serverPath = Join-Path $runtimeDir "llama-server.exe"
@@ -77,7 +164,7 @@ if ($ForceModel -or -not (Test-Path -LiteralPath $modelPath -PathType Leaf)) {
     Remove-Item -LiteralPath $downloadPath -Force -ErrorAction SilentlyContinue
     Write-Host "Downloading low-memory coding model directly to the external drive..."
     Write-Host "Destination: $modelPath"
-    Invoke-WebRequest -UseBasicParsing -Uri $ModelUrl -OutFile $downloadPath -Headers @{ "User-Agent" = "Roldex-Low-Memory-Setup" }
+    Invoke-RoldexDownload -Uri $ModelUrl -OutFile $downloadPath -Label "Roldex model download"
 
     $size = (Get-Item -LiteralPath $downloadPath).Length
     if ($size -lt 100MB) {
@@ -88,7 +175,8 @@ if ($ForceModel -or -not (Test-Path -LiteralPath $modelPath -PathType Leaf)) {
     Move-Item -LiteralPath $downloadPath -Destination $modelPath -Force
     Write-Host "Model downloaded successfully." -ForegroundColor Green
 } else {
-    Write-Host "Model already exists at $modelPath"
+    $existingSizeGb = (Get-Item -LiteralPath $modelPath).Length / 1GB
+    Write-Host ("Model already exists at {0} ({1:N2} GB)" -f $modelPath, $existingSizeGb)
 }
 
 $bin = Join-Path $env:LOCALAPPDATA "Roldex\bin"

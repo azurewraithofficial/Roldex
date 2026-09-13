@@ -704,10 +704,10 @@ fn install_embedded_plugins() -> Result<Vec<String>> {
             .with_context(|| format!("failed to write {}", main_path.display()))?;
         fs::write(&runtime_path, EMBEDDED_RUNTIME_PLUGIN)
             .with_context(|| format!("failed to write {}", runtime_path.display()))?;
-        return Ok(vec![
+        Ok(vec![
             main_path.display().to_string(),
             runtime_path.display().to_string(),
-        ]);
+        ])
     }
 
     #[cfg(not(windows))]

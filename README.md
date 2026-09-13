@@ -1,181 +1,360 @@
 # Roldex
 
-Roldex is a lightweight, open-source Roblox Studio and Luau development agent for the terminal, with a companion Roblox Studio plugin.
+Roldex is a lightweight, open-source Roblox Studio and Luau development agent for the terminal, with companion Roblox Studio plugins.
 
-It is deliberately focused on **Roblox game development**, not general-purpose programming. Roldex can inspect and edit project files, audit Luau, review Git changes, analyze screenshots, retrieve current official Roblox documentation, and accept live context from Roblox Studio.
+It is deliberately focused on **Roblox game development**, not general-purpose programming. The goal is an autonomous Roblox workflow: describe the finished result, then let Roldex inspect the project/place, build visibly in Studio, write Luau, test, visually inspect when supported, repair failures, verify, and only then report completion.
 
-> Status: v0.1 foundation / early Roldex Studio integration.
+> Status: active v0.1 development. The architecture is usable, but Roldex is still pre-release software and Studio/runtime coverage continues to expand.
 
-## Why Roldex
+## AI modes
 
-- Roblox/Luau-first system prompt and tooling
-- online AI inference, so large models do not need to live on your PC
-- free-provider-first OpenRouter configuration
-- bounded project inspection instead of dumping an entire repository into every prompt
-- exact-match patches for smaller and safer edits
-- workspace path and symlink-escape protection
-- deterministic Roblox/Luau security and modernization checks
-- current Roblox Creator Hub documentation retrieval
-- workspace screenshot/image vision
-- Git diff, unstage and guarded single-file restore tools
-- live Roblox Studio selection and active-script context
-- explicit Studio-side code apply instead of silently replacing scripts
+Roldex now supports two inference modes while keeping the same Roblox agent and Studio tools.
+
+### Cloud mode
+
+Cloud mode remains the compatibility default:
+
+```text
+Roldex -> OpenRouter -> remote model
+```
+
+It keeps local resource usage low, but the selected provider/model can have request quotas, rate limits, or charges.
+
+### Local mode
+
+Local mode connects Roldex to a keyless OpenAI-compatible server running on the same computer:
+
+```text
+Roldex -> 127.0.0.1:8080 -> llama-server -> local GGUF model
+```
+
+Local inference removes OpenRouter request/day limits from the text/coding path. It still has physical limits: model size, RAM, VRAM, CPU/GPU speed, storage, and power.
+
+Install the local `llama.cpp` runtime on Windows without downloading a model yet:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-local-runtime.ps1
+```
+
+Or place that runtime on another drive:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-local-runtime.ps1 `
+  -InstallDir "E:\RoldexAI\llama.cpp" `
+  -Backend cpu
+```
+
+Start Roldex against an already-running local server:
+
+```powershell
+roldex --local-ai
+```
+
+Custom endpoint/model:
+
+```powershell
+roldex --local-ai `
+  --local-endpoint "http://127.0.0.1:8080/v1/chat/completions" `
+  --local-model "roldex-local"
+```
+
+When a GGUF model has been chosen, Windows users can start the local server and Roldex together:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-local-ai.ps1 `
+  -LlamaServerPath "E:\RoldexAI\llama.cpp\llama-server.exe" `
+  -ModelPath "E:\RoldexAI\models\coding-model.gguf" `
+  -LaunchRoldex
+```
+
+The model/runtime can live on **any drive**, including an external USB drive. Roldex itself does not require the model to be stored on the Windows system drive.
+
+Before trusting a local model with files or Studio, Roldex can test normal chat plus actual OpenAI-style tool calling:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-local-ai.ps1
+```
+
+See **[docs/LOCAL_AI.md](docs/LOCAL_AI.md)** for the full local architecture and setup contract.
+
+## Highlights
+
+- Roblox/Luau-first agent intelligence
+- normal-language interface; slash commands are optional shortcuts
+- cloud or keyless local AI inference
+- streaming model responses and persistent progress updates between tool steps
+- OpenAI-compatible provider layer
+- bounded project inventory/search instead of dumping the entire repository into each prompt
+- current official Roblox Creator Hub documentation retrieval
+- automatic greenfield game/name originality research when compatible web grounding is available
+- deterministic Roblox/Luau security and modernization audit
+- natural local-image understanding when the selected model/provider supports vision
+- Git status/diff plus guarded file-level undo helpers
+- Windows full-access mode for task-relevant local files/tools
+- live Roblox Studio selection and active-editor context
+- real-Instance-first Studio building with visible incremental actions
+- undoable Studio mutation batches
+- automated play/run/multiplayer testing
+- virtual keyboard/mouse/pointer input for experience-level test flows when available
+- Studio device simulation for responsive UI testing
+- Studio viewport PNG capture and visual repair loops when a vision-capable inference path is configured
+- automatic Studio plugin synchronization/repair on Windows
 
 ## Install
 
-### Windows
+See **[INSTALL.md](INSTALL.md)** for copy/paste installation commands and Windows setup.
 
-From a cloned copy of this repository, run PowerShell:
+From a cloned repository on Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
-The installer first tries the latest prebuilt Windows release. If no compatible release exists yet, it falls back to `cargo install` when Rust/Cargo is installed. It also installs the Roldex Studio plugin unless you pass `-SkipPlugin`.
+With Rust/Cargo already installed:
 
-### macOS / Linux
-
-```bash
-chmod +x ./scripts/install.sh
-./scripts/install.sh
-```
-
-The installer prefers a matching release binary and falls back to Cargo. On macOS it also installs the Studio plugin by default.
-
-### Cargo directly
-
-If Rust is already installed:
-
-```bash
+```powershell
 cargo install --git https://github.com/azurewraithofficial/Roldex roldex-cli --force
 ```
 
-### Build from source
+The installer prefers a matching prebuilt release, validates it, updates PATH, and installs both Roldex Studio plugins. If no compatible release exists yet, it can fall back to Cargo.
 
-```bash
-cargo build --release -p roldex-cli
-```
+## Configure cloud AI
 
-Cross-platform release binaries are produced by `.github/workflows/release.yml` for Windows x86-64, Linux x86-64, Intel macOS, and Apple Silicon macOS. A `v*` Git tag publishes those build artifacts as a GitHub release.
+Roldex's cloud default currently uses an OpenRouter-compatible configuration with `openrouter/free`.
 
-## Configure AI
-
-Roldex defaults to the OpenRouter-compatible `openrouter/free` route. Create an OpenRouter API key and expose it to Roldex.
-
-Windows PowerShell:
+Windows PowerShell for the current session:
 
 ```powershell
 $env:OPENROUTER_API_KEY="your-key"
 ```
 
-macOS/Linux:
+Provider availability, quotas, web-search charges, and rate limits can apply. Roldex cannot bypass a provider account quota.
 
-```bash
-export OPENROUTER_API_KEY="your-key"
+Optional image/voice generation currently uses `POLLINATIONS_API_KEY` when configured.
+
+## Configure local AI
+
+Local mode needs **no OpenRouter key**.
+
+An OpenAI-compatible server must be running first. Roldex's intended local runtime is `llama.cpp`/`llama-server`, although the provider layer is intentionally compatible with other local servers that implement the same chat-completions/tool-call protocol.
+
+Default local endpoint:
+
+```text
+http://127.0.0.1:8080/v1/chat/completions
 ```
 
-Provider availability and rate limits can still apply. You can change the provider, endpoint, model, permission mode, and UI settings in `roldex.toml`; start from `roldex.config.example.toml`.
+Environment-based configuration is also supported:
 
-## Run
-
-Open a terminal in your Roblox/Rojo project directory and run:
-
-```bash
+```powershell
+$env:ROLDEX_AI_MODE="local"
+$env:ROLDEX_AI_ENDPOINT="http://127.0.0.1:8080/v1/chat/completions"
+$env:ROLDEX_MODEL="roldex-local"
 roldex
 ```
 
-By default Roldex also starts its Roblox Studio bridge at:
+An example config is included at **[roldex.local.example.toml](roldex.local.example.toml)**.
+
+Large `.gguf` model files and local runtime binaries are intentionally not stored in the Roldex repository.
+
+## Run
+
+Open PowerShell/Terminal in the Roblox/Rojo project directory:
+
+```text
+roldex
+```
+
+For a task that genuinely needs files/tools outside the active project:
+
+```text
+roldex --full-access
+```
+
+For local inference:
+
+```text
+roldex --local-ai
+```
+
+The Studio bridge listens on loopback by default:
 
 ```text
 http://127.0.0.1:38247
 ```
 
-The bridge binds to loopback only. Use `--studio-port <port>` to choose another port or `--no-studio-bridge` to disable it.
+Keep the CLI open while using the Studio plugin.
 
-## CLI commands
+## Natural-language workflow
+
+Examples:
 
 ```text
-/help                         Show commands
-/status                       Show detected Roblox/Rojo project details
-/tree                         Show a bounded project tree
-/read <path>                  Read a UTF-8 workspace file
-/image <path> :: <prompt>     Analyze a workspace PNG/JPEG/WebP/GIF
-/quit                         Exit Roldex
+Build a complete sci-fi lobby for this game and test it.
+
+This is a new game concept called Neon Salvagers. Check if the name/concept is too close to existing Roblox games, improve it if needed, then build the first playable version.
+
+Make this UI work well on desktop and phone, then visually verify both layouts.
+
+Fix the current round system. Keep testing and repairing it until the runtime errors are gone.
+
+Look at "screenshots/studio-error.png" and fix what is causing it.
 ```
 
-Normal chat can use structured agent tools to search the project, read relevant files, run the Luau audit, patch or create files, inspect Git changes, safely unstage one file, restore explicitly requested unstaged edits, and retrieve current official Roblox documentation.
+Roldex does not require `/image`, `/web`, or other mode commands for normal requests. It infers intent and chooses tools itself.
 
-Image input is workspace-scoped and size-limited. The file is encoded for the provider request; Roldex does not require a local vision model.
+During multi-step work, short user-visible progress messages are retained instead of disappearing when Roldex transitions into a tool call.
 
-## Roldex Studio plugin
+## Roldex Studio
 
-The companion plugin lives in `plugins/roldex-studio/RoldexStudio.plugin.lua`.
+The visible companion plugin is:
 
-When the CLI is running, the plugin can:
+```text
+plugins/roldex-studio/RoldexStudio.plugin.lua
+```
 
-- show a docked Roldex panel inside Roblox Studio
-- report the current Studio selection
-- include the active Script, LocalScript, or ModuleScript editor source
-- send that live Studio context to the same Roldex agent
-- display the answer inside Studio
-- explicitly apply the first returned Luau code block to the active script through `ScriptEditorService`
+The automated runtime/testing companion is:
 
-Roldex Studio does **not** automatically apply model output. Review the answer and click the Apply button yourself when you want the first code block written to the active editor.
+```text
+plugins/roldex-studio/RoldexStudioRuntime.plugin.lua
+```
 
-See `plugins/roldex-studio/README.md` for plugin installation and bridge details.
+On Windows, Roldex synchronizes its bundled plugin copies at startup and can force repair them with:
 
-## Smarter Roblox context
+```powershell
+roldex --repair-studio-plugin
+```
 
-Roldex combines several forms of context rather than relying on model memory alone:
+Restart Roblox Studio after plugin replacement so Studio reloads the source.
 
-1. project detection and bounded project-tree inspection
-2. literal text search and relevant-file reads
-3. deterministic Luau/Roblox audit findings
-4. Git status/diff state
-5. live Studio selection and active editor source when the plugin is connected
-6. current official Roblox Creator Hub documentation retrieved on demand
-7. screenshot/image vision when you provide an image path
+When connected, Roldex can operate on the live Studio data model instead of only editing source files. Current direct operations include:
 
-The official-documentation tools search Roblox's agent-friendly Creator Hub documentation index and then retrieve only bounded `/docs/...` Markdown pages from `create.roblox.com`. The prompt explicitly keeps Roblox Engine APIs separate from Open Cloud APIs.
+- inspect selection, Instances, children, properties and attributes
+- find objects by hierarchy/name/class
+- create real Roblox Instances
+- set properties and attributes
+- clone, move/reparent and delete objects
+- select created/changed objects so live work is visible
+- add/remove CollectionService tags
+- create/update Script, LocalScript and ModuleScript source using `ScriptEditorService`
+- move Models/BaseParts by pivot/CFrame
+- create/edit GUI hierarchies using normal Instances/properties
+- create Parts, Models, Attachments, Constraints, effects, lights, sounds, remotes and other creatable Instances
+- fill/clear Terrain primitives
+- undo/redo through Studio history
 
-## Current Luau audit baseline
+## Real-time building
 
-The deterministic analyzer currently checks for:
+`studio_batch` executes actions sequentially with a small configurable delay. Roldex therefore prefers actual editable Instances appearing while you watch rather than generating a throwaway setup script for everything.
 
-- legacy global scheduler calls such as `wait`, `spawn`, and `delay`
-- client-side DataStoreService usage
-- deprecated BodyMover usage
-- risky server `RemoteFunction:InvokeClient()` usage
-- possible non-yielding `while true do` loops
-- server scripts placed in replicated locations
-- heuristic remote handlers that perform sensitive operations without obvious validation markers
+Scripts are still used where runtime logic or genuinely procedural content belongs.
 
-Findings include a rule ID, severity, file, line, message, and remediation. Heuristic findings are leads to inspect, not proof of a vulnerability.
+## Visual QA
 
-## Safety boundaries
+Roldex Studio can use Studio screenshot APIs to capture the current viewport as PNG under:
 
-- normal file operations stay inside the configured workspace
-- canonical-path checks block symlink/path escapes
-- large reads/writes/searches/images are bounded
-- Git file paths use literal pathspecs
+```text
+.roldex/captures/
+```
+
+A vision-capable model/provider can then review visible issues such as map composition, scale, visual hierarchy, lighting, misplaced geometry, UI clipping, responsive layout, and expected interaction state.
+
+A text-only local coding model does **not** automatically gain vision. Roldex must not claim visual verification unless an actual vision-capable inference path successfully inspected the image.
+
+## Automated testing
+
+The Studio testing layer supports:
+
+- Run mode smoke tests
+- Play mode player/client tests
+- multiplayer tests with up to 8 simulated clients
+- Output/error/warning collection
+- bounded test timeouts
+- optional screenshot capture during a test
+- simulated experience-level keyboard input
+- simulated mouse clicks/movement/position
+- simulated pointer/scroll/pan/pinch input
+- text-input simulation
+- device/resolution/orientation emulation
+- real chat-message test harnesses where supported
+
+This lets Roldex exercise player interactions, UI flows, movement, Tools/abilities, chat customization, networking, and animation-driven systems instead of only checking that scripts/Instances exist.
+
+## Roblox intelligence sources
+
+Roldex combines:
+
+1. project/Rojo detection
+2. compact project inventory
+3. project tree + literal text search
+4. relevant file reads and exact patches
+5. deterministic Luau audit findings
+6. Git state
+7. live Studio selection/editor/Instance context
+8. official Roblox documentation tooling
+9. optional live web research
+10. local screenshots and Studio viewport captures
+11. runtime logs, simulated inputs and device tests
+
+Project-specific conventions can be supplied in:
+
+```text
+ROLDEX.md
+.roldex/INSTRUCTIONS.md
+AGENTS.md
+```
+
+## Local model specialization
+
+Roldex does not need to train a model from scratch. The intended path is:
+
+```text
+open coding model
+    + Roldex Roblox/Luau instructions
+    + project/Studio context
+    + Roblox tools
+    + deterministic analyzers
+    + Roblox-specific evaluation
+    + optional RAG / adapter fine-tuning later
+```
+
+Candidate open models can be evaluated for Luau quality, Roblox API accuracy, function-calling reliability, multi-step repair behavior, latency, RAM/VRAM use, and Studio planning quality before Roldex recommends one as a default.
+
+## Full computer access and self-repair
+
+Workspace mode remains the safe default. With `--full-access`, Roldex can access absolute paths that the current OS account itself can access and can run local development programs with bounded time/output.
+
+The agent is instructed to inspect unfamiliar files before changing them, avoid unrelated personal files, repair recoverable failures itself, and verify after mutation.
+
+## Security and capability boundaries
+
+- Studio bridge is loopback-only and requires the Roldex bridge header
+- recommended local model server is also loopback-only
+- workspace mode blocks path/symlink escapes
+- full computer mutation requires explicit full-access mode
+- Git paths use literal pathspecs
 - repository-wide destructive Git reset workflows are intentionally excluded
-- destructive single-file Git restore requires explicit discard intent
-- the Studio bridge listens on `127.0.0.1` only and requires the Roldex Studio bridge header
-- Studio code replacement requires an explicit plugin Apply action
+- Studio mutation batches are recorded in Undo history
+- visual/runtime claims require successful evidence rather than model assumption
+- local mode removes provider quotas only from inference actually performed locally
+
+Roldex cannot bypass Roblox account permissions, moderation, security prompts, plugin security restrictions, publishing permissions, OS permissions, model hardware requirements, or third-party provider quotas.
 
 ## Repository layout
 
 ```text
-apps/roldex-cli/               Interactive CLI and localhost Studio bridge
-crates/roldex-core/            Agent runtime, provider, tools, analysis and docs retrieval
-plugins/roldex-studio/         Roblox Studio companion plugin
-scripts/                       Install helpers
-.github/workflows/             CI and cross-platform release builds
-docs/                          Roadmap and project documentation
+apps/roldex-cli/               CLI + localhost Studio bridge
+crates/roldex-core/            Agent runtime, intelligence, tools, providers and Studio broker
+plugins/roldex-studio/         Roblox Studio companion plugins
+scripts/                       Install, validation and local-AI launcher helpers
+.github/workflows/             CI and release/dev builds
+docs/                          Architecture, local AI docs and roadmap
+INSTALL.md                     Installation guide
+THIRD_PARTY_NOTICES.md         Upstream project/license notes
 ```
 
-## Next upgrades
+## Upstream/open-source references
 
-The main remaining v0.1 runtime item is streaming model output. The next intelligence work is deeper RemoteEvent/DataStore analysis, Rojo-aware placement, richer debugging, and more Studio-native editing/creation operations.
+Roldex evaluated `ggml-org/llama.cpp`, `openai/codex`, `QwenLM/qwen-code`, and `openai/gpt-oss` while designing the local stack. Roldex currently keeps its own Roblox-specific agent code rather than vendoring those projects. See **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)**.
 
 Roldex is not affiliated with Roblox Corporation or OpenAI.

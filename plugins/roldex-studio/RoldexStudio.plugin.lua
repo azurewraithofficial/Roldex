@@ -7,15 +7,20 @@ local StudioService = game:GetService("StudioService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local CollectionService = game:GetService("CollectionService")
 local StudioTestService = game:GetService("StudioTestService")
+local StudioCaptureService = game:GetService("StudioCaptureService")
+local StudioDeviceSimulatorService = game:GetService("StudioDeviceSimulatorService")
+local EncodingService = game:GetService("EncodingService")
+local UserInputService = game:GetService("UserInputService")
 local LogService = game:GetService("LogService")
 
 local DEFAULT_BRIDGE_URL = "http://127.0.0.1:38247"
-local MAX_SELECTION_ITEMS = 20
-local MAX_SOURCE_CHARS = 60000
-local MAX_ATTRIBUTES = 20
-local MAX_DETAIL_CHARS = 2600
+local MAX_SELECTION_ITEMS = 24
+local MAX_SOURCE_CHARS = 80000
+local MAX_ATTRIBUTES = 24
+local MAX_DETAIL_CHARS = 3200
 local MAX_QUERY_RESULTS = 100
-local MAX_LOGS = 200
+local MAX_LOGS = 250
+local MAX_DEVICE_RESULTS = 100
 
 local colors = {
 	background = Color3.fromRGB(20, 22, 27),
@@ -41,12 +46,11 @@ local widgetInfo = DockWidgetPluginGuiInfo.new(
 	Enum.InitialDockState.Right,
 	false,
 	false,
-	440,
-	650,
-	340,
-	460
+	460,
+	680,
+	360,
+	480
 )
-
 local widget = plugin:CreateDockWidgetPluginGuiAsync("RoldexStudioDock", widgetInfo)
 widget.Title = "Roldex Studio"
 
@@ -57,67 +61,53 @@ root.BackgroundColor3 = colors.background
 root.BorderSizePixel = 0
 root.Parent = widget
 
-local padding = Instance.new("UIPadding")
-padding.PaddingTop = UDim.new(0, 12)
-padding.PaddingBottom = UDim.new(0, 12)
-padding.PaddingLeft = UDim.new(0, 12)
-padding.PaddingRight = UDim.new(0, 12)
-padding.Parent = root
+local rootPadding = Instance.new("UIPadding")
+rootPadding.PaddingTop = UDim.new(0, 12)
+rootPadding.PaddingBottom = UDim.new(0, 12)
+rootPadding.PaddingLeft = UDim.new(0, 12)
+rootPadding.PaddingRight = UDim.new(0, 12)
+rootPadding.Parent = root
 
-local function label(name, text, position, size, textSize, color)
-	local instance = Instance.new("TextLabel")
-	instance.Name = name
-	instance.BackgroundTransparency = 1
-	instance.Position = position
-	instance.Size = size
-	instance.Font = Enum.Font.Gotham
-	instance.Text = text
-	instance.TextSize = textSize
-	instance.TextColor3 = color or colors.text
-	instance.TextXAlignment = Enum.TextXAlignment.Left
-	instance.TextYAlignment = Enum.TextYAlignment.Center
-	instance.Parent = root
-	return instance
+local function makeLabel(name, text, position, size, textSize, color)
+	local object = Instance.new("TextLabel")
+	object.Name = name
+	object.BackgroundTransparency = 1
+	object.Position = position
+	object.Size = size
+	object.Font = Enum.Font.Gotham
+	object.Text = text
+	object.TextSize = textSize
+	object.TextColor3 = color or colors.text
+	object.TextXAlignment = Enum.TextXAlignment.Left
+	object.TextYAlignment = Enum.TextYAlignment.Center
+	object.Parent = root
+	return object
 end
 
-local function button(name, text, position, size)
-	local instance = Instance.new("TextButton")
-	instance.Name = name
-	instance.Position = position
-	instance.Size = size
-	instance.BackgroundColor3 = colors.panelAlt
-	instance.BorderSizePixel = 0
-	instance.Active = true
-	instance.AutoButtonColor = true
-	instance.Font = Enum.Font.GothamSemibold
-	instance.Text = text
-	instance.TextSize = 13
-	instance.TextColor3 = colors.text
-	instance.Parent = root
-
+local function makeButton(name, text, position, size)
+	local object = Instance.new("TextButton")
+	object.Name = name
+	object.Position = position
+	object.Size = size
+	object.BackgroundColor3 = colors.panelAlt
+	object.BorderSizePixel = 0
+	object.Active = true
+	object.AutoButtonColor = true
+	object.Font = Enum.Font.GothamSemibold
+	object.Text = text
+	object.TextSize = 13
+	object.TextColor3 = colors.text
+	object.Parent = root
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(0, 6)
-	corner.Parent = instance
-	return instance
+	corner.Parent = object
+	return object
 end
 
-local function setButtonEnabled(instance, enabled)
-	instance.Active = enabled
-	instance.AutoButtonColor = enabled
-	instance.TextColor3 = enabled and colors.text or colors.muted
-end
-
-local title = label(
-	"Title",
-	"ROLDEX",
-	UDim2.new(0, 0, 0, 0),
-	UDim2.new(1, 0, 0, 28),
-	20,
-	colors.text
-)
+local title = makeLabel("Title", "ROLDEX", UDim2.new(0, 0, 0, 0), UDim2.new(1, 0, 0, 28), 20)
 title.Font = Enum.Font.GothamBold
 
-local statusLabel = label(
+local statusLabel = makeLabel(
 	"Status",
 	"● Checking bridge...",
 	UDim2.new(0, 0, 0, 30),
@@ -126,7 +116,7 @@ local statusLabel = label(
 	colors.muted
 )
 
-local selectionLabel = label(
+local selectionLabel = makeLabel(
 	"Selection",
 	"Selection: none",
 	UDim2.new(0, 0, 0, 56),
@@ -152,12 +142,10 @@ bridgeUrlBox.PlaceholderColor3 = colors.muted
 bridgeUrlBox.TextSize = 12
 bridgeUrlBox.TextXAlignment = Enum.TextXAlignment.Left
 bridgeUrlBox.Parent = root
-
 local urlPadding = Instance.new("UIPadding")
 urlPadding.PaddingLeft = UDim.new(0, 8)
 urlPadding.PaddingRight = UDim.new(0, 8)
 urlPadding.Parent = bridgeUrlBox
-
 local urlCorner = Instance.new("UICorner")
 urlCorner.CornerRadius = UDim.new(0, 6)
 urlCorner.Parent = bridgeUrlBox
@@ -165,13 +153,13 @@ urlCorner.Parent = bridgeUrlBox
 local promptBox = Instance.new("TextBox")
 promptBox.Name = "Prompt"
 promptBox.Position = UDim2.new(0, 0, 0, 140)
-promptBox.Size = UDim2.new(1, 0, 0, 120)
+promptBox.Size = UDim2.new(1, 0, 0, 124)
 promptBox.BackgroundColor3 = colors.panel
 promptBox.BorderSizePixel = 0
 promptBox.ClearTextOnFocus = false
 promptBox.Font = Enum.Font.Code
 promptBox.MultiLine = true
-promptBox.PlaceholderText = "Describe the finished Roblox result you want. Roldex can build, script, test, inspect, repair, and keep going until it finishes..."
+promptBox.PlaceholderText = "Describe the finished Roblox result. Roldex can research, build live, script, test, inspect visually, repair, and verify it..."
 promptBox.Text = ""
 promptBox.TextColor3 = colors.text
 promptBox.PlaceholderColor3 = colors.muted
@@ -180,44 +168,40 @@ promptBox.TextWrapped = true
 promptBox.TextXAlignment = Enum.TextXAlignment.Left
 promptBox.TextYAlignment = Enum.TextYAlignment.Top
 promptBox.Parent = root
-
 local promptPadding = Instance.new("UIPadding")
 promptPadding.PaddingTop = UDim.new(0, 8)
 promptPadding.PaddingBottom = UDim.new(0, 8)
 promptPadding.PaddingLeft = UDim.new(0, 8)
 promptPadding.PaddingRight = UDim.new(0, 8)
 promptPadding.Parent = promptBox
-
 local promptCorner = Instance.new("UICorner")
 promptCorner.CornerRadius = UDim.new(0, 6)
 promptCorner.Parent = promptBox
 
-local sendButton = button(
+local sendButton = makeButton(
 	"Send",
-	"Build / Fix with Roldex",
-	UDim2.new(0, 0, 0, 270),
+	"Build / Fix / Test",
+	UDim2.new(0, 0, 0, 274),
 	UDim2.new(0.68, -4, 0, 34)
 )
 sendButton.BackgroundColor3 = colors.accentDark
-
-local healthButton = button(
+local healthButton = makeButton(
 	"Reconnect",
 	"Reconnect",
-	UDim2.new(0.68, 4, 0, 270),
+	UDim2.new(0.68, 4, 0, 274),
 	UDim2.new(0.32, -4, 0, 34)
 )
 
 local outputFrame = Instance.new("ScrollingFrame")
 outputFrame.Name = "Output"
-outputFrame.Position = UDim2.new(0, 0, 0, 314)
-outputFrame.Size = UDim2.new(1, 0, 1, -362)
+outputFrame.Position = UDim2.new(0, 0, 0, 318)
+outputFrame.Size = UDim2.new(1, 0, 1, -318)
 outputFrame.BackgroundColor3 = colors.panel
 outputFrame.BorderSizePixel = 0
 outputFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
 outputFrame.CanvasSize = UDim2.new()
 outputFrame.ScrollBarThickness = 6
 outputFrame.Parent = root
-
 local outputCorner = Instance.new("UICorner")
 outputCorner.CornerRadius = UDim.new(0, 6)
 outputCorner.Parent = outputFrame
@@ -229,7 +213,7 @@ outputLabel.Position = UDim2.new(0, 8, 0, 8)
 outputLabel.AutomaticSize = Enum.AutomaticSize.Y
 outputLabel.BackgroundTransparency = 1
 outputLabel.Font = Enum.Font.Code
-outputLabel.Text = "Roldex is ready. Keep Studio open and you can watch live changes appear here and in the 3D view/Explorer."
+outputLabel.Text = "Roldex is ready. Keep Studio open and watch the place change while it works."
 outputLabel.TextColor3 = colors.text
 outputLabel.TextSize = 13
 outputLabel.TextWrapped = true
@@ -237,17 +221,25 @@ outputLabel.TextXAlignment = Enum.TextXAlignment.Left
 outputLabel.TextYAlignment = Enum.TextYAlignment.Top
 outputLabel.Parent = outputFrame
 
-local applyButton = button(
-	"Apply",
-	"Apply First Luau Block to Active Script",
-	UDim2.new(0, 0, 1, -38),
-	UDim2.new(1, 0, 0, 34)
-)
-setButtonEnabled(applyButton, false)
-
-local lastAnswer = ""
 local pollBusy = false
 local pluginConnected = false
+
+local function setStatus(text, kind)
+	statusLabel.Text = "● " .. text
+	if kind == "ok" then
+		statusLabel.TextColor3 = colors.accent
+	elseif kind == "error" then
+		statusLabel.TextColor3 = colors.danger
+	else
+		statusLabel.TextColor3 = colors.muted
+	end
+end
+
+local function setButtonEnabled(button, enabled)
+	button.Active = enabled
+	button.AutoButtonColor = enabled
+	button.TextColor3 = enabled and colors.text or colors.muted
+end
 
 local function sanitizeBridgeUrl(value)
 	value = tostring(value or ""):gsub("%s+$", ""):gsub("^%s+", ""):gsub("/$", "")
@@ -265,141 +257,6 @@ local function bridgeUrl()
 	return value
 end
 
-local function setStatus(text, kind)
-	statusLabel.Text = "● " .. text
-	if kind == "ok" then
-		statusLabel.TextColor3 = colors.accent
-	elseif kind == "error" then
-		statusLabel.TextColor3 = colors.danger
-	else
-		statusLabel.TextColor3 = colors.muted
-	end
-end
-
-local function isScriptContainer(instance)
-	return instance
-		and (instance:IsA("Script") or instance:IsA("LocalScript") or instance:IsA("ModuleScript"))
-end
-
-local function shortValue(value, maxChars)
-	local text = tostring(value)
-	if #text > maxChars then
-		return text:sub(1, maxChars) .. "…"
-	end
-	return text
-end
-
-local function describeAttributes(instance, parts)
-	local attributes = instance:GetAttributes()
-	local names = {}
-	for name in pairs(attributes) do
-		table.insert(names, name)
-	end
-	table.sort(names)
-
-	if #names == 0 then
-		return
-	end
-
-	local formatted = {}
-	for index, name in ipairs(names) do
-		if index > MAX_ATTRIBUTES then
-			table.insert(formatted, "…")
-			break
-		end
-		table.insert(formatted, name .. "=" .. shortValue(attributes[name], 120))
-	end
-	table.insert(parts, "Attributes{" .. table.concat(formatted, ", ") .. "}")
-end
-
-local function describeInstance(instance)
-	local parts = { "Children=" .. tostring(#instance:GetChildren()) }
-
-	if instance:IsA("BasePart") then
-		table.insert(parts, "Position=" .. shortValue(instance.Position, 120))
-		table.insert(parts, "Size=" .. shortValue(instance.Size, 120))
-		table.insert(parts, "Anchored=" .. tostring(instance.Anchored))
-		table.insert(parts, "CanCollide=" .. tostring(instance.CanCollide))
-		table.insert(parts, "Material=" .. tostring(instance.Material))
-	elseif instance:IsA("Model") then
-		local ok, pivot = pcall(function()
-			return instance:GetPivot()
-		end)
-		if ok then
-			table.insert(parts, "PivotPosition=" .. shortValue(pivot.Position, 120))
-		end
-		table.insert(parts, "PrimaryPart=" .. (instance.PrimaryPart and instance.PrimaryPart.Name or "none"))
-	elseif instance:IsA("GuiObject") then
-		table.insert(parts, "Position=" .. shortValue(instance.Position, 160))
-		table.insert(parts, "Size=" .. shortValue(instance.Size, 160))
-		table.insert(parts, "Visible=" .. tostring(instance.Visible))
-		table.insert(parts, "ZIndex=" .. tostring(instance.ZIndex))
-	elseif instance:IsA("Sound") then
-		table.insert(parts, "SoundId=" .. shortValue(instance.SoundId, 240))
-		table.insert(parts, "Volume=" .. tostring(instance.Volume))
-		table.insert(parts, "Looped=" .. tostring(instance.Looped))
-	elseif instance:IsA("ParticleEmitter") then
-		table.insert(parts, "Enabled=" .. tostring(instance.Enabled))
-		table.insert(parts, "Rate=" .. tostring(instance.Rate))
-	end
-
-	describeAttributes(instance, parts)
-	local text = table.concat(parts, "; ")
-	if #text > MAX_DETAIL_CHARS then
-		text = text:sub(1, MAX_DETAIL_CHARS) .. "…"
-	end
-	return text
-end
-
-local function updateSelectionLabel()
-	local selected = Selection:Get()
-	local active = StudioService.ActiveScript
-	local parts = { ("Selection: %d"):format(#selected) }
-	if isScriptContainer(active) then
-		table.insert(parts, "Active: " .. active:GetFullName())
-	end
-	selectionLabel.Text = table.concat(parts, "  |  ")
-end
-
-local function collectSelection()
-	local result = {}
-	for index, instance in ipairs(Selection:Get()) do
-		if index > MAX_SELECTION_ITEMS then
-			break
-		end
-		table.insert(result, {
-			name = instance.Name,
-			class_name = instance.ClassName,
-			full_name = instance:GetFullName(),
-			details = describeInstance(instance),
-		})
-	end
-	return result
-end
-
-local function collectActiveScript()
-	local active = StudioService.ActiveScript
-	if not isScriptContainer(active) then
-		return nil
-	end
-
-	local ok, source = pcall(function()
-		return ScriptEditorService:GetEditorSource(active)
-	end)
-	if not ok then
-		source = ""
-	end
-	if #source > MAX_SOURCE_CHARS then
-		source = source:sub(1, MAX_SOURCE_CHARS) .. "\n-- … source truncated by Roldex Studio"
-	end
-
-	return {
-		class_name = active.ClassName,
-		full_name = active:GetFullName(),
-		source = source,
-	}
-end
-
 local function request(options)
 	options.Headers = options.Headers or {}
 	options.Headers["X-Roldex-Bridge"] = "studio"
@@ -414,6 +271,19 @@ local function responseDetail(response)
 		return ("HTTP %s: %s"):format(tostring(response.StatusCode), tostring(response.Body))
 	end
 	return "HTTP " .. tostring(response.StatusCode)
+end
+
+local function isScriptContainer(instance)
+	return instance
+		and (instance:IsA("Script") or instance:IsA("LocalScript") or instance:IsA("ModuleScript"))
+end
+
+local function shortValue(value, maxChars)
+	local text = tostring(value)
+	if #text > maxChars then
+		return text:sub(1, maxChars) .. "…"
+	end
+	return text
 end
 
 local function encodeValue(value)
@@ -467,8 +337,7 @@ local function resolvePath(path, refs)
 	end
 	if path == "game" then
 		return game
-	end
-	if path == "$activeScript" then
+	elseif path == "$activeScript" then
 		return StudioService.ActiveScript
 	end
 	local selectionIndex = path:match("^%$selection:(%d+)$")
@@ -495,7 +364,6 @@ local function resolvePath(path, refs)
 	else
 		current = game:FindFirstChild(components[1])
 	end
-
 	for index = 2, #components do
 		if not current then
 			break
@@ -507,7 +375,8 @@ local function resolvePath(path, refs)
 	end
 
 	for _, descendant in ipairs(game:GetDescendants()) do
-		if descendant:GetFullName() == original or descendant:GetFullName() == path then
+		local fullName = descendant:GetFullName()
+		if fullName == original or fullName == path then
 			return descendant
 		end
 	end
@@ -533,8 +402,7 @@ local function decodeValue(value, refs)
 	elseif typeName == "UDim2" then
 		return UDim2.new(value.x_scale or 0, value.x_offset or 0, value.y_scale or 0, value.y_offset or 0)
 	elseif typeName == "CFrame" then
-		local components = value.components or {}
-		return CFrame.new(table.unpack(components))
+		return CFrame.new(table.unpack(value.components or {}))
 	elseif typeName == "Enum" then
 		local enumType = Enum[value.enum_type]
 		assert(enumType, "unknown Enum type " .. tostring(value.enum_type))
@@ -560,14 +428,149 @@ local function decodeValue(value, refs)
 	elseif typeName == "ColorSequence" then
 		local keypoints = {}
 		for _, keypoint in ipairs(value.keypoints or {}) do
-			table.insert(keypoints, ColorSequenceKeypoint.new(
-				keypoint.time,
-				Color3.new(keypoint.r or 0, keypoint.g or 0, keypoint.b or 0)
-			))
+			table.insert(
+				keypoints,
+				ColorSequenceKeypoint.new(
+					keypoint.time,
+					Color3.new(keypoint.r or 0, keypoint.g or 0, keypoint.b or 0)
+				)
+			)
 		end
 		return ColorSequence.new(keypoints)
 	end
 	error("unsupported typed Studio value " .. tostring(typeName))
+end
+
+local function describeAttributes(instance, parts)
+	local attributes = instance:GetAttributes()
+	local names = {}
+	for name in pairs(attributes) do
+		table.insert(names, name)
+	end
+	table.sort(names)
+	if #names == 0 then
+		return
+	end
+	local formatted = {}
+	for index, name in ipairs(names) do
+		if index > MAX_ATTRIBUTES then
+			table.insert(formatted, "…")
+			break
+		end
+		table.insert(formatted, name .. "=" .. shortValue(attributes[name], 120))
+	end
+	table.insert(parts, "Attributes{" .. table.concat(formatted, ", ") .. "}")
+end
+
+local function describeInstance(instance)
+	local parts = { "Children=" .. tostring(#instance:GetChildren()) }
+	if instance:IsA("BasePart") then
+		table.insert(parts, "Position=" .. shortValue(instance.Position, 120))
+		table.insert(parts, "Size=" .. shortValue(instance.Size, 120))
+		table.insert(parts, "Anchored=" .. tostring(instance.Anchored))
+		table.insert(parts, "CanCollide=" .. tostring(instance.CanCollide))
+		table.insert(parts, "CanQuery=" .. tostring(instance.CanQuery))
+		table.insert(parts, "CanTouch=" .. tostring(instance.CanTouch))
+		table.insert(parts, "Material=" .. tostring(instance.Material))
+	elseif instance:IsA("Model") then
+		local ok, pivot = pcall(function()
+			return instance:GetPivot()
+		end)
+		if ok then
+			table.insert(parts, "PivotPosition=" .. shortValue(pivot.Position, 120))
+		end
+		table.insert(parts, "PrimaryPart=" .. (instance.PrimaryPart and instance.PrimaryPart.Name or "none"))
+	elseif instance:IsA("GuiObject") then
+		table.insert(parts, "Position=" .. shortValue(instance.Position, 160))
+		table.insert(parts, "Size=" .. shortValue(instance.Size, 160))
+		table.insert(parts, "AbsolutePosition=" .. shortValue(instance.AbsolutePosition, 120))
+		table.insert(parts, "AbsoluteSize=" .. shortValue(instance.AbsoluteSize, 120))
+		table.insert(parts, "Visible=" .. tostring(instance.Visible))
+		table.insert(parts, "ZIndex=" .. tostring(instance.ZIndex))
+	elseif instance:IsA("Sound") then
+		table.insert(parts, "SoundId=" .. shortValue(instance.SoundId, 240))
+		table.insert(parts, "Volume=" .. tostring(instance.Volume))
+		table.insert(parts, "Looped=" .. tostring(instance.Looped))
+	elseif instance:IsA("ParticleEmitter") then
+		table.insert(parts, "Enabled=" .. tostring(instance.Enabled))
+		table.insert(parts, "Rate=" .. tostring(instance.Rate))
+	end
+	describeAttributes(instance, parts)
+	local text = table.concat(parts, "; ")
+	if #text > MAX_DETAIL_CHARS then
+		text = text:sub(1, MAX_DETAIL_CHARS) .. "…"
+	end
+	return text
+end
+
+local function serializeInstance(instance, requestedProperties)
+	local properties = {}
+	for _, property in ipairs(requestedProperties or {}) do
+		local ok, value = pcall(function()
+			return instance[property]
+		end)
+		properties[property] = ok and encodeValue(value) or "<unreadable>"
+	end
+	local attributes = {}
+	for name, value in pairs(instance:GetAttributes()) do
+		attributes[name] = encodeValue(value)
+	end
+	return {
+		name = instance.Name,
+		class_name = instance.ClassName,
+		full_name = instance:GetFullName(),
+		children_count = #instance:GetChildren(),
+		details = describeInstance(instance),
+		attributes = attributes,
+		properties = properties,
+	}
+end
+
+local function collectSelection()
+	local result = {}
+	for index, instance in ipairs(Selection:Get()) do
+		if index > MAX_SELECTION_ITEMS then
+			break
+		end
+		table.insert(result, {
+			name = instance.Name,
+			class_name = instance.ClassName,
+			full_name = instance:GetFullName(),
+			details = describeInstance(instance),
+		})
+	end
+	return result
+end
+
+local function collectActiveScript()
+	local active = StudioService.ActiveScript
+	if not isScriptContainer(active) then
+		return nil
+	end
+	local ok, source = pcall(function()
+		return ScriptEditorService:GetEditorSource(active)
+	end)
+	if not ok then
+		source = ""
+	end
+	if #source > MAX_SOURCE_CHARS then
+		source = source:sub(1, MAX_SOURCE_CHARS) .. "\n-- … source truncated by Roldex Studio"
+	end
+	return {
+		class_name = active.ClassName,
+		full_name = active:GetFullName(),
+		source = source,
+	}
+end
+
+local function updateSelectionLabel()
+	local selected = Selection:Get()
+	local active = StudioService.ActiveScript
+	local parts = { ("Selection: %d"):format(#selected) }
+	if isScriptContainer(active) then
+		table.insert(parts, "Active: " .. active:GetFullName())
+	end
+	selectionLabel.Text = table.concat(parts, "  |  ")
 end
 
 local function setProperties(instance, properties, refs)
@@ -590,39 +593,12 @@ local function setAttributes(instance, attributes, refs)
 	end
 end
 
-local function updateScriptSource(script, source)
-	assert(isScriptContainer(script), "target is not a Script, LocalScript, or ModuleScript")
+local function updateScriptSource(scriptObject, source)
+	assert(isScriptContainer(scriptObject), "target is not a Script, LocalScript, or ModuleScript")
 	assert(type(source) == "string", "script source must be a string")
-	ScriptEditorService:UpdateSourceAsync(script, function()
+	ScriptEditorService:UpdateSourceAsync(scriptObject, function()
 		return source
 	end)
-end
-
-local function serializeInstance(instance, requestedProperties)
-	local properties = {}
-	for _, property in ipairs(requestedProperties or {}) do
-		local ok, value = pcall(function()
-			return instance[property]
-		end)
-		if ok then
-			properties[property] = encodeValue(value)
-		else
-			properties[property] = "<unreadable>"
-		end
-	end
-	local attributes = {}
-	for name, value in pairs(instance:GetAttributes()) do
-		attributes[name] = encodeValue(value)
-	end
-	return {
-		name = instance.Name,
-		class_name = instance.ClassName,
-		full_name = instance:GetFullName(),
-		children_count = #instance:GetChildren(),
-		details = describeInstance(instance),
-		attributes = attributes,
-		properties = properties,
-	}
 end
 
 local function executeQuery(payload)
@@ -645,7 +621,7 @@ local function executeQuery(payload)
 		assert(instance, "could not resolve Studio path " .. tostring(payload.path))
 		local items = {}
 		for _, child in ipairs(instance:GetChildren()) do
-			if #items >= (payload.max_results or MAX_QUERY_RESULTS) then
+			if #items >= math.clamp(tonumber(payload.max_results) or MAX_QUERY_RESULTS, 1, MAX_QUERY_RESULTS) then
 				break
 			end
 			table.insert(items, serializeInstance(child, payload.properties))
@@ -658,9 +634,10 @@ local function executeQuery(payload)
 		local nameContains = string.lower(tostring(payload.name_contains or ""))
 		local className = payload.class_name
 		local items = {}
-		local candidates = rootInstance == game and game:GetDescendants() or rootInstance:GetDescendants()
+		local candidates = rootInstance:GetDescendants()
 		for _, instance in ipairs(candidates) do
-			local nameMatches = nameContains == "" or string.find(string.lower(instance.Name), nameContains, 1, true) ~= nil
+			local nameMatches = nameContains == ""
+				or string.find(string.lower(instance.Name), nameContains, 1, true) ~= nil
 			local classMatches = not className or instance.ClassName == className or instance:IsA(className)
 			if nameMatches and classMatches then
 				table.insert(items, serializeInstance(instance, payload.properties))
@@ -764,8 +741,7 @@ local function executeMutationAction(action, refs)
 	elseif op == "pivot_to" then
 		local target = resolvePath(action.target or action.path, refs)
 		local pivot = decodeValue(action.cframe, refs)
-		assert(typeof(pivot) == "CFrame", "pivot_to requires a CFrame")
-		assert(target, "pivot_to target could not be resolved")
+		assert(target and typeof(pivot) == "CFrame", "pivot_to requires a target and CFrame")
 		if target:IsA("Model") then
 			target:PivotTo(pivot)
 		elseif target:IsA("BasePart") then
@@ -775,21 +751,20 @@ local function executeMutationAction(action, refs)
 		end
 		return target
 	elseif op == "terrain_fill_block" then
-		local terrain = workspace.Terrain
 		local cframe = decodeValue(action.cframe, refs)
 		local size = decodeValue(action.size, refs)
 		local material = decodeValue(action.material, refs)
 		assert(typeof(cframe) == "CFrame" and typeof(size) == "Vector3", "terrain_fill_block requires CFrame and Vector3")
 		assert(typeof(material) == "EnumItem", "terrain_fill_block requires Enum.Material")
-		terrain:FillBlock(cframe, size, material)
-		return terrain
+		workspace.Terrain:FillBlock(cframe, size, material)
+		return workspace.Terrain
 	elseif op == "terrain_fill_ball" then
-		local terrain = workspace.Terrain
 		local position = decodeValue(action.position, refs)
 		local material = decodeValue(action.material, refs)
 		assert(typeof(position) == "Vector3", "terrain_fill_ball requires Vector3 position")
-		terrain:FillBall(position, tonumber(action.radius) or 4, material)
-		return terrain
+		assert(typeof(material) == "EnumItem", "terrain_fill_ball requires Enum.Material")
+		workspace.Terrain:FillBall(position, tonumber(action.radius) or 4, material)
+		return workspace.Terrain
 	elseif op == "terrain_clear" then
 		workspace.Terrain:Clear()
 		return workspace.Terrain
@@ -813,8 +788,7 @@ local function executeBatch(command)
 		for index, action in ipairs(actions) do
 			setStatus(("Building %d/%d · %s"):format(index, #actions, tostring(action.op)), "neutral")
 			local result = executeMutationAction(action, refs)
-			local encoded = encodeValue(result)
-			table.insert(results, { index = index, op = action.op, result = encoded })
+			table.insert(results, { index = index, op = action.op, result = encodeValue(result) })
 			if highlightCreated and typeof(result) == "Instance" and (action.op == "create" or action.op == "clone") then
 				Selection:Set({ result })
 			end
@@ -829,21 +803,177 @@ local function executeBatch(command)
 		setStatus(("Built %d Studio action%s"):format(#actions, #actions == 1 and "" or "s"), "ok")
 		return { actions_completed = #actions, results = results }
 	end
-
 	pcall(function()
 		ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Cancel)
 	end)
 	error(errorMessage)
 end
 
+local function captureStudioView(payload)
+	payload = payload or {}
+	if not StudioCaptureService:CanCaptureScreenshot() then
+		local allowed = StudioCaptureService:RequestScreenshotPermissionAsync()
+		assert(allowed, "Studio screenshot permission was not granted")
+	end
+	local capture = StudioCaptureService:CaptureScreenshot({
+		Format = Enum.StudioCaptureScreenshotFormat.PNG,
+		UICaptureMode = payload.include_ui == true and Enum.UICaptureMode.All or Enum.UICaptureMode.None,
+	})
+	assert(capture, "Studio screenshot capture did not return a capture object")
+
+	local errors = capture:GetErrors()
+	if #errors > 0 then
+		local formatted = {}
+		for _, captureError in ipairs(errors) do
+			table.insert(formatted, tostring(captureError))
+		end
+		error("Studio screenshot capture failed: " .. table.concat(formatted, "; "))
+	end
+
+	local width = math.clamp(tonumber(payload.width) or 960, 160, 1280)
+	local height = math.clamp(tonumber(payload.height) or 540, 90, 720)
+	if capture.Resolution.X ~= width or capture.Resolution.Y ~= height then
+		capture = capture:ScaleAsync(Enum.ResamplerMode.Default, Vector2.new(width, height))
+		local scaledErrors = capture:GetErrors()
+		if #scaledErrors > 0 then
+			local formatted = {}
+			for _, captureError in ipairs(scaledErrors) do
+				table.insert(formatted, tostring(captureError))
+			end
+			error("Studio screenshot scaling failed: " .. table.concat(formatted, "; "))
+		end
+	end
+
+	local raw = capture:GetBuffer()
+	local encodedBuffer = EncodingService:Base64Encode(raw)
+	return {
+		data_base64 = buffer.tostring(encodedBuffer),
+		buffer_format = tostring(capture.BufferFormat),
+		resolution = encodeValue(capture.Resolution),
+		original_size = encodeValue(capture.OriginalSize),
+		ui_capture_mode = tostring(capture.UICaptureMode),
+	}
+end
+
+local function executeDevice(payload)
+	payload = payload or {}
+	local operation = payload.operation
+	if operation == "status" then
+		return {
+			device_id = StudioDeviceSimulatorService:GetDeviceAsync(),
+			resolution = encodeValue(StudioDeviceSimulatorService:GetResolutionAsync()),
+			orientation = tostring(StudioDeviceSimulatorService:GetOrientationAsync()),
+			pixel_density = StudioDeviceSimulatorService:GetPixelDensityAsync(),
+			scaling_mode = tostring(StudioDeviceSimulatorService:GetScalingModeAsync()),
+		}
+	elseif operation == "list" then
+		local ids = StudioDeviceSimulatorService:GetDeviceListAsync()
+		local devices = {}
+		for index, deviceId in ipairs(ids) do
+			if index > MAX_DEVICE_RESULTS then
+				break
+			end
+			local ok, info = pcall(function()
+				return StudioDeviceSimulatorService:GetDeviceInfoAsync(deviceId)
+			end)
+			table.insert(devices, { id = deviceId, info = ok and info or nil })
+		end
+		return { devices = devices, truncated = #ids > MAX_DEVICE_RESULTS }
+	elseif operation == "set_device" then
+		assert(type(payload.device_id) == "string" and payload.device_id ~= "", "set_device requires device_id")
+		StudioDeviceSimulatorService:SetDeviceAsync(payload.device_id)
+		return executeDevice({ operation = "status" })
+	elseif operation == "set_resolution" then
+		local width = math.clamp(tonumber(payload.width) or 0, 240, 7680)
+		local height = math.clamp(tonumber(payload.height) or 0, 240, 4320)
+		StudioDeviceSimulatorService:SetResolutionAsync(width, height)
+		return executeDevice({ operation = "status" })
+	elseif operation == "set_orientation" then
+		local mapping = {
+			landscape = Enum.ScreenOrientation.LandscapeSensor,
+			portrait = Enum.ScreenOrientation.Portrait,
+			sensor = Enum.ScreenOrientation.Sensor,
+		}
+		local orientation = mapping[string.lower(tostring(payload.orientation or ""))]
+		assert(orientation, "set_orientation requires landscape, portrait, or sensor")
+		StudioDeviceSimulatorService:SetOrientationAsync(orientation)
+		return executeDevice({ operation = "status" })
+	elseif operation == "stop" then
+		StudioDeviceSimulatorService:StopSimulationAsync()
+		return { stopped = true }
+	end
+	error("unsupported Studio device operation " .. tostring(operation))
+end
+
+local function pointerActionFromJson(value)
+	local output = {}
+	if type(value) ~= "table" then
+		return output
+	end
+	if tonumber(value.Wheel or value.wheel) then
+		output.Wheel = tonumber(value.Wheel or value.wheel)
+	end
+	if tonumber(value.Pinch or value.pinch) then
+		output.Pinch = tonumber(value.Pinch or value.pinch)
+	end
+	local pan = value.Pan or value.pan
+	if type(pan) == "table" then
+		output.Pan = Vector2.new(tonumber(pan.x or pan.X) or 0, tonumber(pan.y or pan.Y) or 0)
+	end
+	return output
+end
+
+local function runInputStep(virtualInput, step)
+	local kind = step.type
+	if kind == "key" then
+		local keyCode = Enum.KeyCode[step.key_code]
+		assert(keyCode, "unknown KeyCode " .. tostring(step.key_code))
+		virtualInput:SendKey(true, keyCode, false)
+		local hold = math.clamp(tonumber(step.hold_seconds) or 0.05, 0, 10)
+		if hold > 0 then
+			task.wait(hold)
+		end
+		virtualInput:SendKey(false, keyCode, false)
+	elseif kind == "mouse_button" then
+		local buttonName = tostring(step.button or "MouseButton1")
+		local button = Enum.UserInputType[buttonName]
+		assert(button, "unknown mouse button " .. buttonName)
+		local position = Vector2.new(tonumber(step.x) or 0, tonumber(step.y) or 0)
+		virtualInput:SendMouseButton(position, button, true, 0)
+		local hold = math.clamp(tonumber(step.hold_seconds) or 0.05, 0, 10)
+		if hold > 0 then
+			task.wait(hold)
+		end
+		virtualInput:SendMouseButton(position, button, false, 0)
+	elseif kind == "mouse_move" then
+		virtualInput:SendMouseDelta(Vector2.new(tonumber(step.x) or 0, tonumber(step.y) or 0))
+	elseif kind == "mouse_position" then
+		virtualInput:SendMousePosition(Vector2.new(tonumber(step.x) or 0, tonumber(step.y) or 0))
+	elseif kind == "text" then
+		virtualInput:SendTextInput(tostring(step.text or ""))
+	elseif kind == "pointer" then
+		virtualInput:SendPointerAction(
+			Vector2.new(tonumber(step.x) or 0, tonumber(step.y) or 0),
+			pointerActionFromJson(step.pointer_action)
+		)
+	else
+		error("unsupported virtual input step " .. tostring(kind))
+	end
+end
+
 local function runStudioTest(payload)
+	payload = payload or {}
 	local mode = payload.mode or "run"
-	local timeoutSeconds = math.clamp(tonumber(payload.timeout_seconds) or 10, 2, 60)
+	local timeoutSeconds = math.clamp(tonumber(payload.timeout_seconds) or 12, 2, 90)
 	local players = math.clamp(tonumber(payload.players) or 2, 1, 8)
 	local logs = {}
 	local warningCount = 0
 	local errorCount = 0
-	local connection = LogService.MessageOut:Connect(function(message, messageType)
+	local inputErrors = {}
+	local inputEvents = 0
+	local testCapture = nil
+
+	local logConnection = LogService.MessageOut:Connect(function(message, messageType)
 		if #logs >= MAX_LOGS then
 			return
 		end
@@ -854,6 +984,62 @@ local function runStudioTest(payload)
 		end
 		table.insert(logs, { message = shortValue(message, 1500), message_type = tostring(messageType) })
 	end)
+
+	local inputSteps = payload.input_steps or {}
+	table.sort(inputSteps, function(a, b)
+		return (tonumber(a.at_seconds) or 0) < (tonumber(b.at_seconds) or 0)
+	end)
+	local inputTask = nil
+	if #inputSteps > 0 then
+		inputTask = task.spawn(function()
+			local startTime = os.clock()
+			local virtualInput = nil
+			for _, step in ipairs(inputSteps) do
+				local atSeconds = math.clamp(tonumber(step.at_seconds) or 0.5, 0, timeoutSeconds - 0.1)
+				local waitTime = atSeconds - (os.clock() - startTime)
+				if waitTime > 0 then
+					task.wait(waitTime)
+				end
+				if not virtualInput then
+					local ok, created = pcall(function()
+						return UserInputService:CreateVirtualInput()
+					end)
+					if ok then
+						virtualInput = created
+					end
+					if not virtualInput then
+						table.insert(inputErrors, "VirtualInput is unavailable in this Studio context")
+						break
+					end
+				end
+				local ok, errorMessage = pcall(function()
+					runInputStep(virtualInput, step)
+				end)
+				if ok then
+					inputEvents += 1
+				else
+					table.insert(inputErrors, tostring(errorMessage))
+				end
+			end
+		end)
+	end
+
+	local captureTask = nil
+	local captureAt = tonumber(payload.capture_at_seconds)
+	if captureAt then
+		captureAt = math.clamp(captureAt, 0.2, timeoutSeconds - 0.1)
+		captureTask = task.spawn(function()
+			task.wait(captureAt)
+			local ok, captureOrError = pcall(function()
+				return captureStudioView({ width = 960, height = 540, include_ui = true })
+			end)
+			if ok then
+				testCapture = captureOrError
+			else
+				testCapture = { error = tostring(captureOrError) }
+			end
+		end)
+	end
 
 	setStatus(("Testing game · %s mode"):format(mode), "neutral")
 	local stopper = task.delay(timeoutSeconds, function()
@@ -879,17 +1065,30 @@ local function runStudioTest(payload)
 	pcall(function()
 		task.cancel(stopper)
 	end)
-	connection:Disconnect()
+	if inputTask then
+		pcall(function()
+			task.cancel(inputTask)
+		end)
+	end
+	if captureTask and not testCapture then
+		pcall(function()
+			task.cancel(captureTask)
+		end)
+	end
+	logConnection:Disconnect()
 	if not ok then
 		error(result)
 	end
 
-	setStatus(("Test finished · %d error%s, %d warning%s"):format(
-		errorCount,
-		errorCount == 1 and "" or "s",
-		warningCount,
-		warningCount == 1 and "" or "s"
-	), errorCount > 0 and "error" or "ok")
+	setStatus(
+		("Test finished · %d error%s, %d warning%s"):format(
+			errorCount,
+			errorCount == 1 and "" or "s",
+			warningCount,
+			warningCount == 1 and "" or "s"
+		),
+		errorCount > 0 and "error" or "ok"
+	)
 
 	return {
 		mode = mode,
@@ -899,6 +1098,9 @@ local function runStudioTest(payload)
 		warning_count = warningCount,
 		logs = logs,
 		log_truncated = #logs >= MAX_LOGS,
+		input_events_sent = inputEvents,
+		input_errors = inputErrors,
+		capture = testCapture,
 	}
 end
 
@@ -908,6 +1110,10 @@ local function executeCommand(command)
 			return executeQuery(command.payload or {})
 		elseif command.action == "batch" then
 			return executeBatch(command)
+		elseif command.action == "capture" then
+			return captureStudioView(command.payload or {})
+		elseif command.action == "device" then
+			return executeDevice(command.payload or {})
 		elseif command.action == "test" then
 			return runStudioTest(command.payload or {})
 		elseif command.action == "undo" then
@@ -919,7 +1125,6 @@ local function executeCommand(command)
 		end
 		error("unsupported Studio command action " .. tostring(command.action))
 	end)
-
 	if ok then
 		return { id = command.id, ok = true, output = output }
 	end
@@ -952,10 +1157,10 @@ local function pollCommands()
 		if decodedOk and decoded.ok and type(decoded.commands) == "table" then
 			for _, command in ipairs(decoded.commands) do
 				local result = executeCommand(command)
-				local postOk = pcall(function()
-					postCommandResult(result)
+				local postOk, postResponse = pcall(function()
+					return postCommandResult(result)
 				end)
-				if not postOk then
+				if not postOk or not postResponse.Success then
 					pluginConnected = false
 					break
 				end
@@ -972,7 +1177,6 @@ local function checkHealth()
 	local ok, response = pcall(function()
 		return request({ Url = bridgeUrl() .. "/health", Method = "GET" })
 	end)
-
 	if ok and response.Success then
 		pluginConnected = true
 		setStatus("Connected · live Studio control ready", "ok")
@@ -982,39 +1186,23 @@ local function checkHealth()
 	end
 end
 
-local function extractLuauCode(text)
-	return text:match("```luau%s*\n(.-)\n```")
-		or text:match("```lua%s*\n(.-)\n```")
-		or text:match("```%s*\n(.-)\n```")
-end
-
-local function refreshApplyState()
-	local canApply = isScriptContainer(StudioService.ActiveScript) and extractLuauCode(lastAnswer) ~= nil
-	setButtonEnabled(applyButton, canApply)
-	applyButton.BackgroundColor3 = canApply and colors.accentDark or colors.panelAlt
-end
-
 local function sendPrompt()
 	if not sendButton.Active then
 		return
 	end
-
 	local message = promptBox.Text:gsub("%s+$", ""):gsub("^%s+", "")
 	if message == "" then
 		setStatus("Write a prompt first", "error")
 		return
 	end
-
 	setButtonEnabled(sendButton, false)
 	sendButton.Text = "Roldex is working..."
-	setStatus("Inspecting, building and verifying...", "neutral")
-
+	setStatus("Researching / building / testing / verifying...", "neutral")
 	local payload = {
 		message = message,
 		selection = collectSelection(),
 		active_script = collectActiveScript(),
 	}
-
 	local ok, response = pcall(function()
 		return request({
 			Url = bridgeUrl() .. "/v1/chat",
@@ -1023,9 +1211,7 @@ local function sendPrompt()
 			Body = HttpService:JSONEncode(payload),
 		})
 	end)
-
 	if not ok or not response.Success then
-		lastAnswer = ""
 		outputLabel.Text = "Roldex request failed: " .. responseDetail(response)
 		setStatus("Request failed", "error")
 	else
@@ -1033,54 +1219,16 @@ local function sendPrompt()
 			return HttpService:JSONDecode(response.Body)
 		end)
 		if decodedOk and decoded.ok and type(decoded.answer) == "string" then
-			lastAnswer = decoded.answer
 			outputLabel.Text = decoded.answer
 			setStatus("Finished · verified result returned", "ok")
 		else
-			lastAnswer = ""
 			outputLabel.Text = "Roldex returned an invalid bridge response."
 			setStatus("Invalid response", "error")
 		end
 	end
-
-	refreshApplyState()
 	setButtonEnabled(sendButton, true)
 	sendButton.BackgroundColor3 = colors.accentDark
-	sendButton.Text = "Build / Fix with Roldex"
-end
-
-local function applyFirstCodeBlock()
-	if not applyButton.Active then
-		return
-	end
-
-	local active = StudioService.ActiveScript
-	local code = extractLuauCode(lastAnswer)
-	if not isScriptContainer(active) or not code then
-		refreshApplyState()
-		return
-	end
-
-	setButtonEnabled(applyButton, false)
-	local recording = ChangeHistoryService:TryBeginRecording("Roldex manual code apply", "Roldex: Apply code")
-	local ok, errorMessage = pcall(function()
-		ScriptEditorService:UpdateSourceAsync(active, function()
-			return code
-		end)
-	end)
-
-	if recording then
-		ChangeHistoryService:FinishRecording(
-			recording,
-			ok and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel
-		)
-	end
-	if ok then
-		setStatus("Applied Luau block to " .. active.Name, "ok")
-	else
-		setStatus("Apply failed: " .. tostring(errorMessage), "error")
-	end
-	refreshApplyState()
+	sendButton.Text = "Build / Fix / Test"
 end
 
 bridgeUrlBox.FocusLost:Connect(function()
@@ -1088,31 +1236,17 @@ bridgeUrlBox.FocusLost:Connect(function()
 	plugin:SetSetting("RoldexBridgeUrl", value)
 	task.spawn(checkHealth)
 end)
-
-Selection.SelectionChanged:Connect(function()
-	updateSelectionLabel()
-	refreshApplyState()
-end)
-
-StudioService:GetPropertyChangedSignal("ActiveScript"):Connect(function()
-	updateSelectionLabel()
-	refreshApplyState()
-end)
-
+Selection.SelectionChanged:Connect(updateSelectionLabel)
+StudioService:GetPropertyChangedSignal("ActiveScript"):Connect(updateSelectionLabel)
 sendButton.Activated:Connect(function()
 	task.spawn(sendPrompt)
 end)
-
 healthButton.Activated:Connect(function()
 	task.spawn(checkHealth)
 end)
-
-applyButton.Activated:Connect(applyFirstCodeBlock)
-
 toolbarButton.Click:Connect(function()
 	widget.Enabled = not widget.Enabled
 end)
-
 widget:GetPropertyChangedSignal("Enabled"):Connect(function()
 	toolbarButton:SetActive(widget.Enabled)
 	if widget.Enabled then
@@ -1129,5 +1263,4 @@ task.spawn(function()
 end)
 
 updateSelectionLabel()
-refreshApplyState()
 task.spawn(checkHealth)

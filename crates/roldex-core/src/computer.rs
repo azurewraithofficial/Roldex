@@ -186,14 +186,21 @@ async fn execute_process(call: &ToolCall, fs: &WorkspaceFs) -> ToolExecution {
     ToolExecution { event, output }
 }
 
-fn list_directory(fs_scope: &WorkspaceFs, requested: &str, max_entries: usize) -> anyhow::Result<Vec<Value>> {
+fn list_directory(
+    fs_scope: &WorkspaceFs,
+    requested: &str,
+    max_entries: usize,
+) -> anyhow::Result<Vec<Value>> {
     let path = fs_scope.resolve_user_read_path(requested)?;
     let metadata = fs::metadata(&path)?;
     anyhow::ensure!(metadata.is_dir(), "{} is not a directory", path.display());
     let mut entries = fs::read_dir(&path)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.file_name());
     let mut output = Vec::new();
-    for entry in entries.into_iter().take(max_entries.clamp(1, MAX_DIRECTORY_ENTRIES)) {
+    for entry in entries
+        .into_iter()
+        .take(max_entries.clamp(1, MAX_DIRECTORY_ENTRIES))
+    {
         let metadata = entry.metadata().ok();
         output.push(json!({
             "name": entry.file_name().to_string_lossy(),
@@ -206,10 +213,17 @@ fn list_directory(fs_scope: &WorkspaceFs, requested: &str, max_entries: usize) -
     Ok(output)
 }
 
-fn find_files(fs_scope: &WorkspaceFs, args: FindFilesArgs) -> anyhow::Result<(Vec<String>, usize, bool)> {
+fn find_files(
+    fs_scope: &WorkspaceFs,
+    args: FindFilesArgs,
+) -> anyhow::Result<(Vec<String>, usize, bool)> {
     let root_requested = args.root.as_deref().unwrap_or(".");
     let root = fs_scope.resolve_user_read_path(root_requested)?;
-    anyhow::ensure!(fs::metadata(&root)?.is_dir(), "{} is not a directory", root.display());
+    anyhow::ensure!(
+        fs::metadata(&root)?.is_dir(),
+        "{} is not a directory",
+        root.display()
+    );
     let needle = args.name_contains.unwrap_or_default().to_ascii_lowercase();
     let extensions: Vec<String> = args
         .extensions
@@ -252,7 +266,11 @@ fn find_files(fs_scope: &WorkspaceFs, args: FindFilesArgs) -> anyhow::Result<(Ve
                 || path
                     .extension()
                     .and_then(|value| value.to_str())
-                    .is_some_and(|extension| extensions.iter().any(|candidate| candidate == &extension.to_ascii_lowercase()));
+                    .is_some_and(|extension| {
+                        extensions
+                            .iter()
+                            .any(|candidate| candidate == &extension.to_ascii_lowercase())
+                    });
             if name_matches && extension_matches {
                 results.push(path.display().to_string());
             }
@@ -278,10 +296,16 @@ async fn run_process(fs_scope: &WorkspaceFs, args: RunProcessArgs) -> anyhow::Re
     } else {
         fs_scope.root().to_path_buf()
     };
-    anyhow::ensure!(fs::metadata(&cwd)?.is_dir(), "process cwd is not a directory");
+    anyhow::ensure!(
+        fs::metadata(&cwd)?.is_dir(),
+        "process cwd is not a directory"
+    );
 
     let mut command = Command::new(program);
-    command.args(&args.args).current_dir(&cwd).kill_on_drop(true);
+    command
+        .args(&args.args)
+        .current_dir(&cwd)
+        .kill_on_drop(true);
     let duration = Duration::from_secs(args.timeout_seconds.unwrap_or(60).clamp(1, 120));
     let output = timeout(duration, command.output())
         .await
@@ -330,7 +354,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        std::env::temp_dir().join(format!("roldex-computer-{label}-{}-{unique}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "roldex-computer-{label}-{}-{unique}",
+            std::process::id()
+        ))
     }
 
     #[test]

@@ -1,0 +1,16 @@
+[ai]
+provider = "local"
+endpoint = "http://127.0.0.1:8080/v1/chat/completions"
+model = "roldex-local"
+api_key_env = ""
+temperature = 0.2
+request_timeout_seconds = 300
+max_retries = 1
+openrouter_sort = "latency"
+
+[permissions]
+mode = "workspace"
+
+[ui]
+show_progress = true
+compact = true

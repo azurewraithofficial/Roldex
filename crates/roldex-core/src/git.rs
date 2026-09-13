@@ -129,6 +129,10 @@ mod tests {
         );
     }
 
+    fn normalize_line_endings(value: &str) -> String {
+        value.replace("\r\n", "\n")
+    }
+
     fn init_repo(label: &str) -> PathBuf {
         let root = test_dir(label);
         fs::create_dir_all(&root).expect("create repo");
@@ -153,10 +157,8 @@ mod tests {
 
         git_restore_worktree_file(&root, "Main.luau").expect("restore worktree");
 
-        assert_eq!(
-            fs::read_to_string(root.join("Main.luau")).expect("read file"),
-            "staged\n"
-        );
+        let restored = fs::read_to_string(root.join("Main.luau")).expect("read file");
+        assert_eq!(normalize_line_endings(&restored), "staged\n");
         assert_eq!(git_diff(&root, Some("Main.luau"), false).expect("diff"), "");
         assert!(
             !git_diff(&root, Some("Main.luau"), true)

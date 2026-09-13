@@ -61,26 +61,31 @@ fi
 
 if [[ "$SKIP_PLUGIN" -eq 0 && "$os" == "Darwin" ]]; then
   plugin_dir="${HOME}/Documents/Roblox/Plugins"
-  plugin_path="${plugin_dir}/RoldexStudio.plugin.lua"
-  plugin_url="https://raw.githubusercontent.com/${REPO}/main/plugins/roldex-studio/RoldexStudio.plugin.lua"
+  main_plugin_path="${plugin_dir}/RoldexStudio.plugin.lua"
+  runtime_plugin_path="${plugin_dir}/RoldexStudioRuntime.plugin.lua"
+  main_plugin_url="https://raw.githubusercontent.com/${REPO}/main/plugins/roldex-studio/RoldexStudio.plugin.lua"
+  runtime_plugin_url="https://raw.githubusercontent.com/${REPO}/main/plugins/roldex-studio/RoldexStudioRuntime.plugin.lua"
   mkdir -p "$plugin_dir"
   if command -v curl >/dev/null 2>&1; then
-    curl -fL --retry 2 -A "Roldex-Installer" "$plugin_url" -o "$plugin_path"
-    echo "Installed Roldex Studio plugin to $plugin_path"
+    curl -fL --retry 2 -A "Roldex-Installer" "$main_plugin_url" -o "$main_plugin_path"
+    curl -fL --retry 2 -A "Roldex-Installer" "$runtime_plugin_url" -o "$runtime_plugin_path"
+    grep -q "X-Roldex-Bridge" "$main_plugin_path"
+    grep -q "StudioCaptureService" "$runtime_plugin_path"
+    grep -q "/v1/runtime-actions" "$runtime_plugin_path"
+    echo "Installed Roldex Studio plugins to $plugin_dir"
     echo "Restart Roblox Studio if it is currently open."
   else
-    echo "curl is required to install the Studio plugin automatically." >&2
+    echo "curl is required to install the Studio plugins automatically." >&2
   fi
 fi
 
 case ":${PATH}:" in
   *":${INSTALL_DIR}:"*) ;;
-  *)
-    echo "Add ${INSTALL_DIR} to PATH if the roldex command is not found."
-    ;;
+  *) echo "Add ${INSTALL_DIR} to PATH if the roldex command is not found." ;;
 esac
 
 echo ""
 echo "Roldex installation complete."
 echo "Set OPENROUTER_API_KEY, open your Roblox/Rojo project folder, then run: roldex"
-echo "The Studio plugin connects to http://127.0.0.1:38247 by default."
+echo "For tasks that truly require files outside the project, run: roldex --full-access"
+echo "The Studio plugins connect to http://127.0.0.1:38247 by default."

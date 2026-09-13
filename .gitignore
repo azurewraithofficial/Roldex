@@ -5,3 +5,9 @@ roldex.toml
 *.log
 .DS_Store
 Thumbs.db
+*.gguf
+/models/
+/local-models/
+/local-runtime/
+llama-server.exe
+llama-server
